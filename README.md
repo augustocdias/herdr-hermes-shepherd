@@ -17,10 +17,23 @@ A tab shows the Hermes board whose slug or display name matches the tab's name, 
 
 Filters are global: every Shepherd tab in every space uses the same Repository and Spec filters, and they persist across App restarts.
 
+### Coordinator
+
+The first time a Shepherd tab is shown, it starts your existing Hermes coordinator: `hermes -p coordinator`, run by Herdr Core in your home folder as the terminal `hermes-coordinator`. It runs the `hermes` on Core's PATH, so your own wrapper, jail and approval settings apply. Shepherd creates no profile and changes no Hermes settings.
+
+There is one coordinator for all tabs and spaces. Each Shepherd tab shows it in a split on the right that runs `hc attach`, so a message typed in one space appears in every other. Drag the divider to resize it; each tab keeps its own width. The Coordinator button at the top right hides the split by zooming the board, and shows it again at the same width. Hiding the split, switching tabs or spaces, and restarting the App leave the coordinator running.
+
+If the coordinator exits, or `hermes` cannot start, the board shows why, with the last lines the coordinator printed, and a button that starts it again. Shepherd never restarts it on its own. Without a `coordinator` profile, Hermes exits with `Profile 'coordinator' does not exist`.
+
+### Cron jobs
+
+The Cron jobs button at the top right lists the cron jobs of every Hermes profile: name, profile, schedule, state, next run, and the last run with its result or error. The list is read-only. Create, edit, pause or delete jobs with `hermes cron`. Cron jobs are separate from Parked cards, which wait for the workflow, not for a timer.
+
 ## Requirements
 
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
-- A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). It needs no Hermes gateway, profile, or plugin.
+- A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). The board and cron list need no Hermes gateway, profile, or plugin.
+- For the coordinator: `hermes` on the PATH Herdr Core runs with, and a Hermes profile named `coordinator`.
 
 ## Install with Home Manager
 
@@ -35,20 +48,22 @@ programs.hermes-shepherd = {
 };
 ```
 
-The module installs the mod at `~/.config/herdr-app/mods/hermes-shepherd/` and puts `hermes-shepherd-board` on your PATH. That command runs `board/hermes_shepherd_board.py` with `hermesPython`. Point `hermesPython` at the same Hermes package your `hermes` command uses.
+The module installs the mod and its icons at `~/.config/herdr-app/mods/hermes-shepherd/` and puts `hermes-shepherd-board` and `hermes-shepherd-cron` on your PATH. They run `board/hermes_shepherd_board.py` and `board/hermes_shepherd_cron.py` with `hermesPython`. Point `hermesPython` at the same Hermes package your `hermes` command uses.
 
 ## Install by hand
 
-1. Copy `mods/hermes-shepherd/main.js` and `mod.json` to `~/.config/herdr-app/mods/hermes-shepherd/`.
-2. Create an executable `hermes-shepherd-board` on the PATH Herdr App runs with:
+1. Copy the files in `mods/hermes-shepherd/` to `~/.config/herdr-app/mods/hermes-shepherd/`.
+2. Create executables `hermes-shepherd-board` and `hermes-shepherd-cron` on the PATH Herdr App runs with:
 
    ```sh
    #!/bin/sh
    exec /path/to/hermes/python3 /path/to/board/hermes_shepherd_board.py "$@"
    ```
 
+   `hermes-shepherd-cron` is the same with `hermes_shepherd_cron.py`.
+
    For a pip or uv install, use the interpreter on the first line of the `hermes` script. For the Nix package, use the `HERMES_PYTHON` path that its `hermes` wrapper exports.
-3. Run `hermes-shepherd-board` once. It prints the default board as JSON, or a JSON `error`.
+3. Run `hermes-shepherd-board` and `hermes-shepherd-cron` once. They print the default board and the cron jobs as JSON, or a JSON `error`.
 4. Run `herdr-app check ~/.config/herdr-app/mods/hermes-shepherd`.
 
 ## Open the tab
@@ -73,7 +88,7 @@ Without Home Manager, write `[{"label": "Hermes", "mod": "hermes-shepherd"}]` to
 
 ## Development
 
-Run the helper's tests with the Hermes Python. They build boards in temporary Hermes homes:
+Run the helpers' tests with the Hermes Python. They build boards and cron jobs in temporary Hermes homes:
 
 ```sh
 "$HERMES_PYTHON" -m unittest discover tests

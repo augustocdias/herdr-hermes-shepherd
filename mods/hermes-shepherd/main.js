@@ -1,11 +1,12 @@
 // Hermes Shepherd: a read-only view of a Hermes kanban board, opened as a tab.
 // The board is the one named like the tab (slug or display name); otherwise Hermes's
 // default board, and the toolbar says so. Repository and spec filters are global.
-// Opened as a popup with props { menu } it is the board's own filter picker.
+// Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
+// it is the read-only cron jobs dialog.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, exec, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay } from "herdr";
+import { spaces, panes, terminals, exec, hc, home, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
 
 const MOD = "hermes-shepherd";
 const HELPER = "hermes-shepherd-board";
@@ -24,13 +25,223 @@ const describe = (filter) => filter == null ? "All" : filter === "" ? "None" : s
 const count = (cols) => cols.reduce((n, c) => n + c.tasks.length, 0);
 const activeTab = () => spaces().find((s) => s.active)?.tabs.find((t) => t.active)?.id ?? null;
 
+// One coordinator serves every Shepherd tab in every space: the user's own `hermes -p coordinator`,
+// started once in Core through the `hermes` on PATH, so the user's wrapper and jail apply.
+// Each Shepherd tab shows it in a right split running `hc attach`; closing or hiding that split
+// never ends the coordinator, and an exited coordinator is restarted only by the person.
+const COORDINATOR = "hermes-shepherd.coordinator"; // shared: { address, error, hidden }
+const COORDINATOR_NAME = "hermes-coordinator";
+const COORDINATOR_ARGV = ["hermes", "-p", "coordinator"];
+const ATTACH = "hermes-shepherd.attach"; // label on a tab's attach terminal: the coordinator it shows
+const coordinator = () => shared(COORDINATOR) ?? {};
+// Controls show the coordinator's visibility, so publish them with every change to it.
+const setCoordinator = (patch) => { setShared(COORDINATOR, { ...coordinator(), ...patch }); publishControls(); };
+// `hc --json` prints its reply on stdout, or `{ error: { message, hint } }` on stderr.
+const hcReply = (result) => { for (const text of [result.stdout, result.stderr]) { try { return JSON.parse(text); } catch {} } return null; };
+const hcError = (result, reply) => reply?.error?.message ?? (result.stderr.trim() || `hc exited with code ${result.code}`);
+const CRON_HELPER = "hermes-shepherd-cron";
+const stamp = (iso) => { const d = iso && new Date(iso); return d && !isNaN(d) ? d.toLocaleString() : "—"; };
+
+// Top-right tab-bar controls, published as herdr-navigation's `tab-controls:hermes-shepherd`.
+// Add a control with one entry: Smart Tabs runs `hermes-shepherd.<id>`, which reaches `run` in the shown copy.
+// Published from init and whenever the coordinator state changes, not on every render.
+const CONTROLS = [
+  { id: "coordinator", label: "Coordinator", icon: `mods/${MOD}/coordinator.svg`,
+    active: () => !coordinator().hidden, run: () => setCoordinator({ hidden: !coordinator().hidden }) },
+  { id: "cron", label: "Cron jobs", icon: `mods/${MOD}/cron.svg`,
+    run: () => openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560, props: { cron: true } }) },
+];
+const publishControls = () => {
+  const list = CONTROLS.map(({ id, label, icon, active }) => ({ id, label, icon, command: `${MOD}.${id}`, active: Boolean(active?.()) }));
+  const key = `tab-controls:${MOD}`;
+  if (JSON.stringify(shared(key)) !== JSON.stringify(list)) setShared(key, list);
+};
+
 export default class Shepherd extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     if (props()?.menu) { this.at = 0; this.handle.focus(); return; }
+    if (props()?.cron) { this.jobs = null; this.error = ""; this.loadCron(cx); this.handle.focus(); return; }
     this.data = null; this.error = ""; this.loading = false; this.queued = false; this.updated = null;
     this.sel = null; this.tab = null; this.requested = undefined; this.watches = 0;
     cx.timer.every(POLL_MS, (cx) => { if (this.requested !== undefined) this.refresh(cx); });
+    this.busy = false; this.attaching = null; this.zoomedFor = undefined; this.tail = null;
+    publishControls();
+    cx.spawn(async (cx) => {
+      for (;;) { const id = await nextCommand(); CONTROLS.find((c) => c.id === id)?.run(this, cx); cx.notify(); }
+    });
+  }
+
+  // The coordinator as Core sees it: none yet, live, ended (exited or gone), unknown, or failed to start.
+  // terminals() lists live terminals only, and a new one shows up a little after `hc run` returns,
+  // so an unlisted coordinator is asked about with `hc get` (readEnd) before it counts as ended.
+  coordinatorStatus() {
+    const { address, error } = coordinator();
+    if (error) return { kind: "failed" };
+    if (!address) return { kind: "none" };
+    if (terminals().some((t) => t.address === address && t.state === "live")) return { kind: "live" };
+    const end = this.tail?.address === address ? this.tail : null;
+    return { kind: end?.gone || (end?.term && end.term.state !== "live") ? "ended" : "unknown" };
+  }
+
+  // Runs in the shown copy on every render; each step is idempotent and does nothing while one is in flight.
+  ensureCoordinator(cx) {
+    if (!this.tab || this.tab !== activeTab() || this.busy) return;
+    const { address, hidden } = coordinator();
+    const status = this.coordinatorStatus();
+    if (status.kind === "none") { if (!hidden) this.launchCoordinator(cx); return; }
+    if (status.kind === "unknown" && this.tail?.address !== address) this.readEnd(address, cx);
+    if (status.kind !== "live") return;
+    const live = terminals().filter((t) => t.state === "live");
+    const attach = live.find((t) => t.labels?.[ATTACH] === address && t.labels?.["herdr.tab"] === this.tab);
+    // An attach just started may not be listed yet; give it a few seconds before starting another.
+    // Attach terminals run with --rm, so an ended one is never listed again.
+    const pending = this.attaching && Date.now() - this.attaching.at < 5000 && !terminals().some((t) => t.address === this.attaching.address);
+    // A failed attach waits for the person (the banner's button) instead of retrying on every render.
+    if (!attach && !pending && !hidden && !this.attachError) this.attachCoordinator(address, cx);
+    // Hiding zooms the board pane, so the split and its width stay for the next show. Applied once per change.
+    const pane = panes().find((p) => p.mod === MOD && p.tab === this.tab);
+    if (attach && pane && this.zoomedFor !== Boolean(hidden)) {
+      this.zoomedFor = Boolean(hidden);
+      if (pane.zoomed !== Boolean(hidden)) run("pane.zoom", { pane: pane.pane });
+    }
+  }
+
+  launchCoordinator(cx) {
+    this.busy = true;
+    cx.spawn(async (cx) => {
+      // A live terminal with the coordinator's name is ours already (e.g. after shared state was lost).
+      const adopt = () => terminals().find((t) => t.state === "live" && t.name === COORDINATOR_NAME);
+      try {
+        if (adopt()) { setCoordinator({ address: adopt().address, error: null }); return; }
+        let result;
+        try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", COORDINATOR_NAME, "--cwd", home(), "--", ...COORDINATOR_ARGV]); }
+        catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
+        const reply = hcReply(result);
+        if (result.code === 0 && reply?.address) { setCoordinator({ address: reply.address, error: null }); return; }
+        if (adopt()) { setCoordinator({ address: adopt().address, error: null }); return; }
+        throw new Error(hcError(result, reply));
+      } catch (e) {
+        setCoordinator({ address: null, error: e?.message ?? String(e) });
+      } finally { this.busy = false; cx.notify(); }
+    });
+  }
+
+  attachCoordinator(address, cx) {
+    const space = spaces().find((s) => s.tabs.some((t) => t.id === this.tab));
+    if (!space) return;
+    if (space.machine) { this.attachError = "The coordinator runs on this computer, so a Shepherd tab in a space on another machine cannot show it."; return; }
+    this.busy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const result = await hc(["run", "--bg", "--json", "--no-parent", "--rm", "--label", `herdr.space=${space.id}`,
+          "--label", `herdr.tab=${this.tab}`, "--label", `${ATTACH}=${address}`, "--", "hc", "attach", address]);
+        const reply = hcReply(result);
+        this.attaching = reply?.address ? { address: reply.address, at: Date.now() } : null;
+        this.attachError = result.code === 0 ? "" : hcError(result, reply);
+      } catch (e) {
+        this.attachError = e?.message ?? String(e);
+      } finally { this.busy = false; this.zoomedFor = undefined; cx.notify(); }
+    });
+  }
+
+  // How an unlisted coordinator finished, and the last lines it printed, which usually say why (e.g. a missing profile).
+  // Still live (not listed yet): ask again in a second rather than call it ended.
+  readEnd(address, cx) {
+    const tail = this.tail = { address, text: "", term: null, gone: false };
+    cx.spawn(async (cx) => {
+      try {
+        const got = await hc(["get", address, "--json"]);
+        if (got.code !== 0) tail.gone = true;
+        else tail.term = JSON.parse(got.stdout);
+        if (tail.term?.state === "live") {
+          cx.timer.after(1000, (cx) => { if (this.tail === tail) { this.tail = null; cx.notify(); } });
+          return;
+        }
+        const read = await hc(["read", address, "--lines", "8"]);
+        if (read.code === 0) tail.text = read.stdout.trimEnd();
+      } catch { tail.gone = true; }
+      cx.notify();
+    });
+  }
+
+  // A deliberate restart: remove the ended terminal's record (`hc rm` refuses a live one), then launch again.
+  restartCoordinator(cx) {
+    const { address } = coordinator();
+    if (address) cx.spawn(async () => { try { await hc(["rm", address]); } catch {} });
+    this.tail = null; this.attachError = "";
+    setCoordinator({ address: null, error: null, hidden: false });
+  }
+
+  coordinatorBanner(t) {
+    const status = this.coordinatorStatus();
+    const { error } = coordinator();
+    if (status.kind !== "failed" && status.kind !== "ended" && !this.attachError) return null;
+    const term = this.tail?.term;
+    const title = status.kind === "failed" ? "Cannot start the Hermes coordinator."
+      : status.kind === "ended" ? (term ? `The Hermes coordinator ${term.reason ?? "ended"}${term.exit_code != null ? ` with code ${term.exit_code}` : term.signal ? ` on signal ${term.signal}` : ""}.`
+        : `The Hermes coordinator terminal ${coordinator().address} is gone; Core no longer has it.`)
+      : "Cannot show the Hermes coordinator in this tab.";
+    const detail = status.kind === "failed" ? error : status.kind === "ended" ? this.tail?.text : this.attachError;
+    return v_flex().flex_none().mx(12).mt(10).p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+      .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child(title))
+      .when(Boolean(detail), (el) => el.child(div().text_size(12).text_color(t.foreground).child(detail)))
+      .child(div().text_size(12).text_color(t.muted).child(`Shepherd runs \`${COORDINATOR_ARGV.join(" ")}\` and does not restart it on its own.`))
+      .child(h_flex().id("coordinator-restart").mt(4).h(24).px(9).flex_none().self_start().items_center().rounded(6).bg(t.solid)
+        .text_size(12).text_color(t.solid_foreground).hover((s) => s.opacity(0.85))
+        .on_click((_e, cx) => this.restartCoordinator(cx)).child(status.kind === "ended" ? "Restart coordinator" : "Try again"));
+  }
+
+  loadCron(cx) {
+    this.loading = true;
+    cx.spawn(async (cx) => {
+      try {
+        let result;
+        try { result = await exec(CRON_HELPER, []); }
+        catch (e) { throw new Error(`Cannot run ${CRON_HELPER}: ${e?.message ?? e}. Install it on PATH (see the Hermes Shepherd README).`); }
+        let reply = null;
+        try { reply = JSON.parse(result.stdout); } catch {}
+        if (result.code !== 0 || !reply || reply.error) throw new Error(reply?.error || result.stderr.trim() || `${CRON_HELPER} exited with code ${result.code}`);
+        this.jobs = reply; this.error = "";
+      } catch (e) { this.error = e?.message ?? String(e); }
+      finally { this.loading = false; cx.notify(); }
+    });
+  }
+
+  renderCron() {
+    const t = theme();
+    const button = (id, text, action) => h_flex().id(id).h(26).px(9).flex_none().items_center().rounded(6).text_size(12)
+      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(text);
+    const jobs = this.jobs?.jobs ?? [];
+    const job = (j) => {
+      const failed = j.last_status && !["ok", "delivery_queued"].includes(j.last_status);
+      const state = j.running ? "running" : j.state ?? (j.enabled ? "scheduled" : "paused");
+      const repeat = j.repeat_times ? ` · run ${j.repeat_completed ?? 0} of ${j.repeat_times}` : "";
+      return v_flex().id(`job-${j.profile}-${j.id}`).flex_none().p(10).gap(4).rounded(8).border(1).border_color(t.border).bg(t.background)
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(j.name || j.id))
+          .child(div().flex_none().px(6).rounded(5).bg(t.surface).text_size(11.5).text_color(state === "scheduled" || state === "running" ? t.foreground : t.muted).child(state)))
+        .child(div().text_size(12).text_color(t.muted).child(`${j.schedule_display ?? "?"}${repeat} · profile ${j.profile}`))
+        .child(div().text_size(12).text_color(t.muted).child(`Next run: ${state === "paused" || state === "completed" ? "—" : stamp(j.next_run_at)}`))
+        .child(div().text_size(12).text_color(t.muted).child(`Last run: ${j.last_run_at ? `${stamp(j.last_run_at)} · ${j.last_status ?? "unknown"}` : "never"}`))
+        .when(Boolean(failed && (j.last_error || j.last_delivery_error)), (el) => el.child(div().text_size(12).text_color(t.blocked)
+          .child(String(j.last_error || j.last_delivery_error).split("\n")[0])));
+    };
+    return v_flex().id("shepherd-cron").track_focus(this.handle).size_full().bg(t.popover)
+      .on_key_down((e, cx) => { if (e.key === "escape") closeOverlay(props().overlay); else if (e.key === "f5") this.loadCron(cx); else return; cx.stop_propagation(); })
+      .child(h_flex().flex_none().px(14).py(10).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Cron jobs"))
+          .child(div().text_size(11.5).text_color(t.dim).child("Read-only. Hermes runs these on their schedules; change them with `hermes cron`. Parked cards are not cron jobs.")))
+        .child(button("cron-refresh", this.loading ? "Loading…" : "Refresh", (_e, cx) => this.loadCron(cx)))
+        .child(button("cron-close", "Close", () => closeOverlay(props().overlay))))
+      .child(v_flex().id("cron-list").flex_1().min_h(0).p(12).gap(8).overflow_y_scrollbar()
+        .when(Boolean(this.error), (el) => el.child(v_flex().p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+          .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child("Cannot read Hermes cron jobs."))
+          .child(div().text_size(12).text_color(t.foreground).child(this.error))))
+        .children((this.jobs?.errors ?? []).map((e) => div().text_size(12).text_color(t.blocked).child(`Profile ${e.profile}: ${e.error}`)))
+        .when(Boolean(this.jobs && !jobs.length), (el) => el.child(div().text_size(12.5).text_color(t.muted).child("No cron jobs in any Hermes profile.")))
+        .children(jobs.map(job)));
   }
 
   // Mod panes get no pane id, so a copy learns its tab when it is first laid out: only a
@@ -132,7 +343,9 @@ export default class Shepherd extends View {
 
   render(cx) {
     if (props()?.menu) return this.renderMenu(props().menu);
+    if (props()?.cron) return this.renderCron();
     if (this.requested !== undefined) this.sync(cx);
+    this.ensureCoordinator(cx);
     const t = theme();
     const filters = shared(FILTERS) ?? {};
     const cols = this.columns();
@@ -156,6 +369,7 @@ export default class Shepherd extends View {
       .child(div().flex_none().text_size(11.5).text_color(t.dim).child(status))
       .child(h_flex().id("shepherd-refresh").h(26).px(9).flex_none().items_center().rounded(6).text_size(12).text_color(t.muted)
         .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.refresh(cx)).child("Refresh"));
+    const coordinatorBanner = this.coordinatorBanner(t);
     const banner = this.error && v_flex().flex_none().mx(12).mt(10).p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
       .child(div().text_size(12.5).font_semibold().text_color(t.blocked)
         .child(this.data ? "Cannot refresh the Hermes board. Showing the last successful read." : "Cannot read the Hermes board."))
@@ -197,6 +411,7 @@ export default class Shepherd extends View {
       })
       .child(toolbar)
       .when(Boolean(banner), (el) => el.child(banner))
+      .when(Boolean(coordinatorBanner), (el) => el.child(coordinatorBanner))
       .when(Boolean(this.data), (el) => el.child(h_flex().id("shepherd-board").flex_1().min_h(0).p(12).gap(10).items_start()
         .overflow_x_scrollbar().children(cols.map(column))));
   }
