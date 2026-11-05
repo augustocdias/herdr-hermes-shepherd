@@ -1,0 +1,9 @@
+# Files Herdr App writes into mod folders
+jsconfig.json
+gpui-kit.d.ts
+herdr.d.ts
+# Python and Nix build output
+__pycache__/
+*.py[cod]
+result
+result-*
