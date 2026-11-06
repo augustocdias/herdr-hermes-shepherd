@@ -19,9 +19,6 @@ in {
     xdg.configFile = {
       "herdr-app/mods/hermes-shepherd/main.js".source = ./mods/hermes-shepherd/main.js;
       "herdr-app/mods/hermes-shepherd/mod.json".source = ./mods/hermes-shepherd/mod.json;
-      "herdr-app/mods/hermes-shepherd/icon.svg".source = ./mods/hermes-shepherd/icon.svg;
-      "herdr-app/mods/hermes-shepherd/coordinator.svg".source = ./mods/hermes-shepherd/coordinator.svg;
-      "herdr-app/mods/hermes-shepherd/cron.svg".source = ./mods/hermes-shepherd/cron.svg;
     };
     home.packages = [
       (pkgs.writeShellScriptBin "hermes-shepherd-board" ''

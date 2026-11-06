@@ -1,6 +1,8 @@
 # Files Herdr App writes into mod folders
 jsconfig.json
 gpui-kit.d.ts
+# Icons main.js writes on load
+mods/hermes-shepherd/*.svg
 herdr.d.ts
 # Python and Nix build output
 __pycache__/

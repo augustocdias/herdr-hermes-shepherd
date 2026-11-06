@@ -48,7 +48,7 @@ programs.hermes-shepherd = {
 };
 ```
 
-The module installs the mod and its icons at `~/.config/herdr-app/mods/hermes-shepherd/` and puts `hermes-shepherd-board` and `hermes-shepherd-cron` on your PATH. They run `board/hermes_shepherd_board.py` and `board/hermes_shepherd_cron.py` with `hermesPython`. Point `hermesPython` at the same Hermes package your `hermes` command uses.
+The module installs the mod at `~/.config/herdr-app/mods/hermes-shepherd/` and puts `hermes-shepherd-board` and `hermes-shepherd-cron` on your PATH. They run `board/hermes_shepherd_board.py` and `board/hermes_shepherd_cron.py` with `hermesPython`. Point `hermesPython` at the same Hermes package your `hermes` command uses.
 
 ## Install by hand
 

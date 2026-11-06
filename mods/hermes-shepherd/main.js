@@ -6,9 +6,29 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, home, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
+import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
 
 const MOD = "hermes-shepherd";
+// Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
+// so the icons live here and are written as real files on load; unchanged files are left alone.
+const SVG = (body) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>\n`;
+const ICONS = {
+  icon: SVG('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>'),
+  coordinator: SVG('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>'),
+  cron: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+};
+(async () => {
+  for (const [name, text] of Object.entries(ICONS)) {
+    const path = `${appHome()}/mods/${MOD}/${name}.svg`;
+    try {
+      // The mod API cannot stat or unlink, and writeTextFile writes through a symlink, so `test -L` and `rm` do.
+      const link = (await exec("test", ["-L", path])).code === 0;
+      if (link) await exec("rm", ["-f", path]);
+      const current = link ? null : await readTextFile(path);
+      if (current !== text) await writeTextFile(path, text, current);
+    } catch (e) { console.log(`hermes-shepherd: cannot write ${path}: ${e}`); }
+  }
+})();
 const HELPER = "hermes-shepherd-board";
 const FILTERS = "hermes-shepherd.filters";
 const CARD = 248;
