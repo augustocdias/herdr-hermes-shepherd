@@ -1,6 +1,6 @@
 # Hermes Shepherd
 
-A Herdr App tab that shows a live, read-only view of a Hermes kanban board. It reads the board through the installed Hermes package and never changes tasks. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
+A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. The one change it makes is the description edit described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
 
 ## What the tab shows
 
@@ -9,7 +9,15 @@ A Herdr App tab that shows a live, read-only view of a Hermes kanban board. It r
 - Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the folder of its native Hermes `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
 - The time of the last successful read. If a read fails, a banner shows the error and the last successful read stays on screen.
 
-The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
+The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, Enter opens the selected card, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
+
+### Task details
+
+Clicking a card, or pressing Enter on it, opens the task in a dialog over the board. It shows the task's Hermes status, assigned profile, spec, repository, workspace, priority, dates, parent and child tasks, and its description, result and history. The history lists comments, runs and events in time order. Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. The dialog follows the board, so a task that starts while it is open shows as started. Esc or the close button dismisses it.
+
+You can edit the description of a task that has never started. Hermes records a task's first start (`started_at`, and a claimed run), and neither goes away when the task later returns to Ready, Todo or Blocked, so a task that ever ran stays locked. Archived tasks are read-only.
+
+Save checks again, right before writing, that the task has still never started and that its description is still the one you began editing. If either check fails, nothing is written and your draft stays in the editor. When someone else changed the description, close the editor to read the new text; saving again then replaces it with your draft. A draft survives closing the dialog until you save or discard it. If the task starts first, the draft opens read-only so you can copy or discard it. Hermes cannot make that check and its write one transaction, so a worker that claims the task in the instant between them still gets the save through; the dialog then warns that the worker may have the earlier description.
 
 ### Which board a tab shows
 

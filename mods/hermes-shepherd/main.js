@@ -1,11 +1,11 @@
-// Hermes Shepherd: a read-only view of a Hermes kanban board, opened as a tab.
+// Hermes Shepherd: a view of a Hermes kanban board, opened as a tab.
 // The board is the one named like the tab (slug or display name); otherwise Hermes's
 // default board, and the toolbar says so. Repository and spec filters are global.
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
-// it is the read-only cron jobs dialog.
+// it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails).
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, TextView, TextareaState, Textarea } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
 
 const MOD = "hermes-shepherd";
@@ -79,6 +79,7 @@ const publishControls = () => {
 
 export default class Shepherd extends View {
   init(_props, cx) {
+    if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     this.handle = cx.focus_handle();
     if (props()?.menu) { this.at = 0; this.handle.focus(); return; }
     if (props()?.cron) { this.jobs = null; this.error = ""; this.loadCron(cx); this.handle.focus(); return; }
@@ -361,7 +362,16 @@ export default class Shepherd extends View {
     this.sel = cols[col]?.tasks.length ? { col, row: Math.max(row, 0) } : null;
   }
 
+  close() { this.details?.close(); }
+
+  // Opens the task's details over the board; works for any task on the board, archived ones too.
+  openTask(task) {
+    openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 760, height: 0.85,
+      props: { task: { board: this.data.board, id: task.id, db: this.data.db } } });
+  }
+
   render(cx) {
+    if (this.details) return this.details.render(cx);
     if (props()?.menu) return this.renderMenu(props().menu);
     if (props()?.cron) return this.renderCron();
     if (this.requested !== undefined) this.sync(cx);
@@ -401,7 +411,7 @@ export default class Shepherd extends View {
       return h_flex().id(`card-${task.id}`).w(CARD).flex_none().p(10).gap(9).items_start().rounded(8)
         .border(1).border_color(selected ? t.accent : t.border).bg(t.background)
         .hover((s) => s.bg(t.hover).border_color(selected ? t.accent : t.input))
-        .on_click((_e, cx) => { this.sel = { col: c, row: r }; this.handle.focus(); cx.notify(); })
+        .on_click((_e, cx) => { this.sel = { col: c, row: r }; this.handle.focus(); this.openTask(task); cx.notify(); })
         .child(div().mt(4).size(9).flex_none().rounded(5).bg(t[MARKER[task.status]] ?? t.unknown))
         .child(v_flex().flex_1().min_w(0).gap(5)
           .child(div().text_size(13).text_color(t.foreground).child(task.title))
@@ -422,6 +432,7 @@ export default class Shepherd extends View {
       .on_key_down((e, cx) => {
         if (["left", "right", "up", "down"].includes(e.key)) this.move(e.key, cols);
         else if (e.key === "escape") this.sel = null;
+        else if (e.key === "enter" && cols[this.sel?.col]?.tasks[this.sel.row]) this.openTask(cols[this.sel.col].tasks[this.sel.row]);
         else if (e.key === "r") this.openMenu("repository");
         else if (e.key === "s") this.openMenu("spec");
         else if (e.key === "f5") this.refresh(cx);
@@ -457,5 +468,226 @@ export default class Shepherd extends View {
         .on_click(() => choose(option))
         .child(div().w(12).flex_none().text_color(t.accent).child(option.value === menu.current ? "✓" : ""))
         .child(div().flex_1().min_w(0).truncate().child(option.label))));
+  }
+}
+
+// One task's details: opened by the board as a dialog with props { task: { board, id, db } }.
+// Shows the task's native status, assignment and context, its description and its history
+// (comments, runs, events) as Markdown, and edits the description while Hermes allows it.
+// The helper rechecks eligibility and freshness when saving; a refused save keeps the draft.
+// It shares this file with the board because Herdr refuses a relative import that resolves outside the mod folder,
+// and Home Manager links main.js on its own so the folder stays writable for the icons.
+
+// Unsaved drafts by board and task, with the version each started from: they outlive the popup.
+const DRAFTS = "hermes-shepherd.drafts";
+
+// The popup's tabs. Only Details exists now; the tab row appears once there is a second one.
+const TABS = [{ key: "details", label: "Details" }];
+
+const when = (at) => at ? new Date(at * 1000).toLocaleString() : "";
+const status = (key) => DISPLAY[key] ?? key.replace(/^./, (c) => c.toUpperCase());
+
+// Runs the helper; resolves with its JSON reply and exit code, or rejects with readable text.
+async function call(args) {
+  let result;
+  try { result = await exec(HELPER, args); }
+  catch (e) { throw new Error(`Cannot run ${HELPER}: ${e?.message ?? e}. Install it on PATH (see the Hermes Shepherd README).`); }
+  let reply = null;
+  try { reply = JSON.parse(result.stdout); } catch {}
+  if (!reply) throw new Error(result.stderr.trim() || `${HELPER} exited with code ${result.code}`);
+  return { code: result.code, reply };
+}
+
+class TaskDetails {
+  init(cx) {
+    this.ref = props().task;
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    this.tab = "details";
+    this.task = null; this.error = ""; this.notice = ""; this.saving = false; this.open = true;
+    this.draft = null; this.base = null; // the editor's text state and the version it started from
+    this.key = `${this.ref.board}:${this.ref.id}`;
+    this.load(cx);
+    this.watch(cx);
+  }
+
+  close() { this.open = false; this.store(); }
+
+  load(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--task", this.ref.board, this.ref.id]);
+        if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.task = reply; this.error = "";
+      } catch (e) { this.error = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  // Follows the board like the tab does, so a task that starts shows as locked without a reopen.
+  watch(cx) {
+    const db = this.ref.db;
+    if (!db) return;
+    cx.spawn(async (cx) => {
+      try {
+        while (this.open) {
+          const changed = await watchFolder(db.slice(0, db.lastIndexOf("/")) || "/");
+          if (this.open && changed.includes(db)) this.load(cx);
+        }
+      } catch {}
+    });
+  }
+
+  // An unsaved draft outlives the popup (Esc closes it) until it is saved or discarded.
+  stored() { return (shared(DRAFTS) ?? {})[this.key] ?? null; }
+  store() {
+    const { [this.key]: _, ...drafts } = shared(DRAFTS) ?? {};
+    if (this.draft) drafts[this.key] = { base: this.base, text: this.draft.value() };
+    if (this.draft || _) setShared(DRAFTS, drafts);
+  }
+
+  edit(cx) {
+    if (!this.draft) {
+      const kept = this.stored();
+      this.base = kept?.base ?? this.task.version;
+      this.draft = TextareaState.new({ value: kept?.text ?? this.task.body, placeholder: "Describe the task in Markdown" });
+      // Ctrl+Enter inserts a newline (a change) before it submits; save the text from before that newline.
+      this.typed = [this.draft.value(), this.draft.value()];
+      this.draft.on("change", () => { this.typed = [this.typed[1], this.draft.value()]; });
+      this.draft.on("submit", (e, cx) => {
+        if (!e.secondary || !this.task.editable) return;
+        const [before, now] = this.typed;
+        const at = [...now].findIndex((c, i) => c !== before[i]);
+        if (now.length === before.length + 1 && now[at] === "\n" && now.slice(at + 1) === before.slice(at)) this.draft.set_value(before);
+        this.save(cx);
+      });
+    }
+    this.editing = true; this.notice = "";
+    this.draft.focus();
+    cx.notify();
+  }
+
+  // Leaves the editor; the draft stays until it is saved or discarded, so Edit brings it back.
+  stopEditing(cx) {
+    // After a conflict, closing the editor shows the newer description; only then may Save replace it.
+    if (this.seen) { this.base = this.seen; this.seen = null; this.store(); }
+    this.editing = false; this.handle.focus(); cx.notify();
+  }
+
+  discard(cx) { this.draft?.release(); this.draft = null; this.base = null; this.notice = ""; this.store(); this.stopEditing(cx); }
+
+  save(cx) {
+    if (this.saving) return;
+    this.saving = true; this.notice = "";
+    const text = this.draft.value();
+    // shortcut: the draft travels as one argument, which Linux caps at 128 KiB; pass a file if descriptions grow that big.
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--edit", this.ref.board, this.ref.id, this.base, text]);
+        if (reply.task) this.task = reply.task;
+        if (code === 2 && reply.task?.editable) {
+          this.seen = reply.task.version;
+          throw new Error(`${reply.error} Close the editor to read the current description; after that, Save replaces it with your draft.`);
+        }
+        if (code !== 0) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.notice = reply.warning ?? "";
+        this.draft.release(); this.draft = null; this.base = null; this.editing = false; this.store();
+        this.handle.focus();
+      } catch (e) { this.notice = e?.message ?? String(e); this.draft.focus(); }
+      finally { this.saving = false; cx.notify(); }
+    });
+  }
+
+  render(cx) {
+    const t = theme();
+    const task = this.task;
+    const button = (id, text, primary, action) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    const section = (title, ...extra) => h_flex().pt(16).pb(6).gap(8).items_center()
+      .child(div().flex_1().text_size(11.5).font_semibold().text_color(t.dim).child(title)).children(extra.filter(Boolean));
+    const fact = (name, value) => value ? h_flex().gap(6).min_w(0).text_size(12)
+      .child(div().flex_none().text_color(t.dim).child(name))
+      .child(div().min_w(0).truncate().text_color(t.foreground).child(String(value))) : null;
+    const markdown = (id, text) => TextView.markdown(id, text).selectable(true).text_size(13);
+
+    const header = h_flex().flex_none().px(18).pt(16).pb(10).gap(10).items_start()
+      .child(v_flex().flex_1().min_w(0).gap(6)
+        .child(div().text_size(15).font_semibold().text_color(t.foreground).child(task?.title ?? "Loading…"))
+        .when(Boolean(task), (el) => el.child(h_flex().gap(8).items_center().text_size(12)
+          .child(div().size(9).flex_none().rounded(5).bg(t[MARKER[task.status]] ?? t.unknown))
+          .child(div().text_color(t.foreground).child(status(task.status)))
+          .child(div().text_color(task.assignee ? t.muted : t.dim).child(`· ${task.assignee || "Unassigned"}`))
+          .child(div().text_color(t.dim).child(`· ${this.ref.id}`)))))
+      .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
+      .child(h_flex().id("details-close").size(24).flex_none().items_center().justify_center().rounded(6)
+        .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click(() => closeOverlay(props().overlay)).child("✕"));
+
+    const tabs = TABS.length > 1 && h_flex().flex_none().px(18).gap(4).border_b(1).border_color(t.border)
+      .children(TABS.map((tab) => h_flex().id(`details-tab-${tab.key}`).h(30).px(10).items_center().text_size(12.5)
+        .border_b(2).border_color(tab.key === this.tab ? t.accent : t.popover)
+        .text_color(tab.key === this.tab ? t.foreground : t.muted).hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { this.tab = tab.key; cx.notify(); }).child(tab.label)));
+
+    const banner = (text, color) => div().mt(10).p(10).rounded(7).border(1).border_color(color).bg(t.surface)
+      .text_size(12).text_color(t.foreground).child(text);
+
+    const body = task && v_flex().flex_1().min_h(0).px(18).pb(18).overflow_y_scrollbar()
+      .child(h_flex().flex_wrap().gap_x(16).gap_y(4).pt(4)
+        .children([
+          fact("Spec", task.spec), fact("Repository", task.repository), fact("Workspace", task.workspace),
+          fact("Priority", task.priority), fact("Created", when(task.created_at)), fact("Started", when(task.started_at)),
+          fact("Completed", when(task.completed_at)),
+          fact("Parents", task.parents.map((p) => `${p.title} (${status(p.status)})`).join(", ")),
+          fact("Children", task.children.map((c) => `${c.title} (${status(c.status)})`).join(", ")),
+        ].filter(Boolean)))
+      .when(Boolean(this.notice), (el) => el.child(banner(this.notice, t.blocked)))
+      .child(section("Description",
+        !task.editable && div().text_size(11.5).text_color(t.dim).child(task.edit_blocked),
+        // A locked task's leftover draft still opens, so it can be copied or discarded.
+        !this.editing && (task.editable || this.draft || this.stored())
+          && button("details-edit", this.draft || this.stored() ? task.editable ? "Edit draft" : "View draft" : "Edit", false, (_e, cx) => this.edit(cx))))
+      .child(this.editing
+        ? v_flex().gap(8)
+          .child(Textarea.new(this.draft).w_full().h(320).p(10).rounded(7).border_1().border_color(t.accent)
+            .bg(t.background).text_color(t.foreground).text_size(13))
+          .child(h_flex().gap(8).items_center()
+            .child(div().flex_1().text_size(11.5).text_color(t.dim).child(task.editable ? "Markdown. Ctrl+Enter saves. The draft is kept until you save or discard it."
+              : "This task is locked. Copy what you need from the draft, then discard it."))
+            .child(button("details-discard", "Discard", false, (_e, cx) => this.discard(cx)))
+            .child(button("details-close-editor", "Close", false, (_e, cx) => this.stopEditing(cx)))
+            .when(task.editable, (el) => el.child(button("details-save", this.saving ? "Saving…" : "Save", true, (_e, cx) => this.save(cx)))))
+        : task.body ? markdown(`details-body-${task.version}`, task.body)
+          : div().text_size(12.5).text_color(t.dim).child("No description."))
+      .when(Boolean(task.result), (el) => el.child(section("Result")).child(markdown("details-result", task.result)))
+      .child(section("History"))
+      .children(this.history(task, t, markdown));
+
+    return v_flex().id("details").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground)
+      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
+      .child(header)
+      .when(Boolean(tabs), (el) => el.child(tabs))
+      .when(Boolean(this.error), (el) => el.child(div().px(18).child(banner(
+        task ? `Cannot refresh this task. Showing the last successful read. ${this.error}` : this.error, t.blocked))))
+      .when(Boolean(body), (el) => el.child(body));
+  }
+
+  // Comments, runs and events in time order. Text is rendered as written; nothing is rewritten.
+  history(task, t, markdown) {
+    const items = [
+      ...task.events.filter((e) => e.kind !== "commented").map((e) => ({ at: e.at, el: div().text_size(11.5).text_color(t.dim)
+        .child(`${e.kind.replaceAll("_", " ")}${e.payload?.reason ? `: ${e.payload.reason}` : ""} · ${when(e.at)}`) })),
+      ...task.comments.map((c, i) => ({ at: c.at, el: v_flex().gap(4).p(10).rounded(7).bg(t.surface)
+        .child(div().text_size(11.5).text_color(t.dim).child(`${c.author} · ${when(c.at)}`))
+        .child(markdown(`details-comment-${i}`, c.body)) })),
+      ...task.runs.map((r, i) => ({ at: r.started_at, el: v_flex().gap(4).p(10).rounded(7).border(1).border_color(t.border)
+        .child(div().text_size(11.5).text_color(t.dim)
+          .child(`Run · ${r.profile || "Unassigned"} · ${r.outcome || r.status} · ${when(r.started_at)}${r.ended_at ? ` to ${when(r.ended_at)}` : ""}`))
+        .when(Boolean(r.summary || r.error), (el) => el.child(markdown(`details-run-${i}`, r.summary || r.error))) })),
+    ];
+    if (!items.length) return [div().text_size(12.5).text_color(t.dim).child("No history.")];
+    return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-history-${i}`).pb(6).child(item.el));
   }
 }

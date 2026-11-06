@@ -104,5 +104,132 @@ with connect_closing() as c:
         _, named = self.helper("default")
         self.assertEqual((named["board"], named["matched"]), ("default", True))
 
+
+class TaskDetailsAndEditing(unittest.TestCase):
+    setUp, tearDown = BoardSnapshot.setUp, BoardSnapshot.tearDown
+    helper, native = BoardSnapshot.helper, BoardSnapshot.native
+
+    def create(self, script="t = kb.create_task(c, title='Task', assignee='programmer', body='Old **body**')"):
+        (task,) = self.native(f"with connect_closing() as c:\n    {script}\n    print(t)")
+        return task
+
+    def run_native(self, task, *calls):
+        self.native("with connect_closing() as c:\n" + "".join(f"    {call.format(t=repr(task))}\n" for call in calls))
+
+    def details(self, task):
+        code, reply = self.helper("--task", "default", task)
+        self.assertEqual(code, 0, reply)
+        return reply
+
+    def edit(self, task, version, body):
+        return self.helper("--edit", "default", task, version, body)
+
+    def test_details_show_native_task_with_raw_markdown_history(self):
+        parent = self.create("t = kb.create_task(c, title='Parent')")
+        task = self.create(f"t = kb.create_task(c, title='Child', assignee='qa', tenant='spec-a', priority=3, "
+                           f"workspace_kind='dir', workspace_path='/src/app', body='# Plan\\n- one', parents=[{parent!r}])")
+        self.run_native(task, "kb.add_comment(c, {t}, 'reviewer', 'See `code` and **this**')")
+        shown = self.details(task)
+        self.assertEqual((shown["id"], shown["title"], shown["status"], shown["assignee"], shown["spec"], shown["priority"]),
+                         (task, "Child", "todo", "qa", "spec-a", 3))
+        self.assertEqual(shown["body"], "# Plan\n- one")
+        self.assertEqual(shown["repository"], "/src/app")
+        self.assertEqual([p["title"] for p in shown["parents"]], ["Parent"])
+        self.assertEqual([(c["author"], c["body"]) for c in shown["comments"]], [("reviewer", "See `code` and **this**")])
+        self.assertIn("commented", [e["kind"] for e in shown["events"]])
+        self.assertTrue(shown["editable"], shown["edit_blocked"])
+
+    def test_unknown_task_and_missing_board_are_errors(self):
+        self.create()
+        code, reply = self.helper("--task", "default", "t_missing")
+        self.assertEqual(code, 1)
+        self.assertIn("t_missing", reply["error"])
+        code, reply = self.helper("--task", "nope", "t_missing")
+        self.assertEqual(code, 1)
+        self.assertFalse((Path(self.home.name) / "kanban" / "boards" / "nope").exists())
+
+    def test_eligible_edit_saves_only_the_description(self):
+        task = self.create()
+        self.run_native(task, "kb.add_comment(c, {t}, 'me', 'keep me')")
+        before = self.details(task)
+        code, reply = self.edit(task, before["version"], "New *body*")
+        self.assertEqual(code, 0, reply)
+        after = reply["task"]
+        self.assertEqual(after["body"], "New *body*")
+        for field in ("title", "status", "assignee", "priority", "spec", "comments", "runs"):
+            self.assertEqual(after[field], before[field], field)
+        self.assertEqual(after["events"][:len(before["events"])], before["events"])
+        self.assertEqual(after["events"][-1]["kind"], "edited")
+        self.assertNotEqual(after["version"], before["version"])
+        self.assertNotIn("warning", reply)
+
+    def test_executed_task_stays_locked_after_returning_to_waiting(self):
+        task = self.create()
+        self.run_native(task, "kb.claim_task(c, {t})", "kb.block_task(c, {t}, reason='needs input')",
+                        "kb.unblock_task(c, {t})")
+        shown = self.details(task)
+        self.assertNotEqual(shown["status"], "running")
+        self.assertFalse(shown["editable"])
+        code, reply = self.edit(task, shown["version"], "Rewritten")
+        self.assertEqual(code, 2, reply)
+        self.assertEqual(self.details(task)["body"], "Old **body**")
+
+    def test_never_run_blocked_or_parked_tasks_stay_editable(self):
+        blocked = self.create()
+        self.run_native(blocked, "kb.block_task(c, {t}, reason='waiting on a human')")
+        parked = self.create()
+        self.run_native(parked, "kb.schedule_task(c, {t}, reason='Monday')")
+        for task in (blocked, parked):
+            shown = self.details(task)
+            self.assertIn(shown["status"], ("blocked", "scheduled"))
+            self.assertTrue(shown["editable"], task)
+
+    def test_archived_task_is_read_only(self):
+        task = self.create()
+        self.run_native(task, "kb.archive_task(c, {t})")
+        shown = self.details(task)
+        self.assertEqual(shown["status"], "archived")
+        self.assertFalse(shown["editable"])
+        self.assertEqual(self.edit(task, shown["version"], "x")[0], 2)
+
+    def test_start_while_editor_open_rejects_save_and_keeps_native_data(self):
+        task = self.create()
+        opened = self.details(task)
+        self.run_native(task, "kb.claim_task(c, {t})")
+        started = self.details(task)
+        code, reply = self.edit(task, opened["version"], "Draft")
+        self.assertEqual(code, 2, reply)
+        self.assertIn("started", reply["error"])
+        self.assertEqual(reply["task"], started)
+
+    def test_description_changed_by_another_writer_rejects_stale_save(self):
+        task = self.create()
+        opened = self.details(task)
+        self.run_native(task, "kb.edit_task(c, {t}, body='Theirs')")
+        code, reply = self.edit(task, opened["version"], "Mine")
+        self.assertEqual(code, 2, reply)
+        self.assertIn("changed", reply["error"])
+        self.assertEqual(reply["task"]["body"], "Theirs")
+        self.assertEqual(self.details(task)["body"], "Theirs")
+
+    def test_claim_racing_the_write_is_reported_not_hidden(self):
+        # The accepted check-then-write window: a claim lands after the recheck, before the write.
+        task = self.create()
+        opened = self.details(task)
+        status, warned = self.native(f"""
+import importlib.util
+spec = importlib.util.spec_from_file_location("helper", {str(HELPER)!r})
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+write = kb.edit_task
+def racing(conn, task_id, **fields):
+    kb.claim_task(conn, task_id)
+    return write(conn, task_id, **fields)
+kb.edit_task = racing
+reply = helper.edit_description("default", {task!r}, {opened["version"]!r}, "Mine")
+print(reply["task"]["status"], "earlier description" in reply.get("warning", ""))
+""")
+        self.assertEqual((status, warned), ("running", "True"))
+
 if __name__ == "__main__":
     unittest.main()
