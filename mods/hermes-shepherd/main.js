@@ -2,10 +2,11 @@
 // The board is the one named like the tab (slug or display name); otherwise Hermes's
 // default board, and the toolbar says so. Repository and spec filters are global.
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
-// it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails).
+// it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
+// with props { settings } it is the session rules dialog (SessionSettings).
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, TextView, TextareaState, Textarea } from "gpui-base";
+import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
 
 const MOD = "hermes-shepherd";
@@ -16,6 +17,7 @@ const ICONS = {
   icon: SVG('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>'),
   coordinator: SVG('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>'),
   cron: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  settings: SVG('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
 };
 (async () => {
   for (const [name, text] of Object.entries(ICONS)) {
@@ -70,6 +72,8 @@ const CONTROLS = [
     active: () => !coordinator().hidden, run: () => setCoordinator({ hidden: !coordinator().hidden }) },
   { id: "cron", label: "Cron jobs", icon: `mods/${MOD}/cron.svg`,
     run: () => openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560, props: { cron: true } }) },
+  { id: "settings", label: "Settings", icon: `mods/${MOD}/settings.svg`,
+    run: () => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 860, height: 0.85, props: { settings: true } }) },
 ];
 const publishControls = () => {
   const list = CONTROLS.map(({ id, label, icon, active }) => ({ id, label, icon, command: `${MOD}.${id}`, active: Boolean(active?.()) }));
@@ -80,6 +84,7 @@ const publishControls = () => {
 export default class Shepherd extends View {
   init(_props, cx) {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
+    if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
     this.handle = cx.focus_handle();
     if (props()?.menu) { this.at = 0; this.handle.focus(); return; }
     if (props()?.cron) { this.jobs = null; this.error = ""; this.loadCron(cx); this.handle.focus(); return; }
@@ -481,8 +486,24 @@ export default class Shepherd extends View {
 // Unsaved drafts by board and task, with the version each started from: they outlive the popup.
 const DRAFTS = "hermes-shepherd.drafts";
 
-// The popup's tabs. Only Details exists now; the tab row appears once there is a second one.
-const TABS = [{ key: "details", label: "Details" }];
+// The popup's tabs; the tab row appears once there is more than one.
+const TABS = [{ key: "details", label: "Details" }, { key: "sessions", label: "Sessions" }];
+
+// Session rules, global like the filters: { rules: [{ regex, command, description, tab }] }.
+// The helper matches them in a child process it stops after a few seconds, so no regex runs while rendering.
+const RULES = "hermes-shepherd.sessions";
+const RULE_FIELDS = { regex: "string", command: "string", description: "string", tab: "boolean" };
+// The saved rules, or { error, raw } when the saved value is not a rule list. Only Save in Settings replaces it.
+const savedRules = () => {
+  const saved = shared(RULES);
+  if (saved == null) return { rules: [] };
+  const rules = saved.rules;
+  if (Array.isArray(rules) && rules.every((r) => r && Object.entries(RULE_FIELDS).every(([k, type]) => typeof r[k] === type))) return { rules };
+  return { error: "The saved session rules are not a list of { regex, command, description, tab } entries, so none are used.",
+    raw: JSON.stringify(saved, null, 2) };
+};
+const RECORDS_SHOWN = 300; // rows per "Show more": thousands of rows at once make the dialog slow
+const shown = (arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : JSON.stringify(arg);
 
 const when = (at) => at ? new Date(at * 1000).toLocaleString() : "";
 const status = (key) => DISPLAY[key] ?? key.replace(/^./, (c) => c.toUpperCase());
@@ -505,6 +526,7 @@ class TaskDetails {
     this.handle.focus();
     this.tab = "details";
     this.task = null; this.error = ""; this.notice = ""; this.saving = false; this.open = true;
+    this.loads = 0; this.scan = null; this.launches = {}; this.shown = RECORDS_SHOWN; // Sessions tab: last scan, launch results by record, rows listed
     this.draft = null; this.base = null; // the editor's text state and the version it started from
     this.key = `${this.ref.board}:${this.ref.id}`;
     this.load(cx);
@@ -518,7 +540,7 @@ class TaskDetails {
       try {
         const { code, reply } = await call(["--task", this.ref.board, this.ref.id]);
         if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
-        this.task = reply; this.error = "";
+        this.task = reply; this.error = ""; this.loads++;
       } catch (e) { this.error = e?.message ?? String(e); }
       cx.notify();
     });
@@ -634,7 +656,8 @@ class TaskDetails {
     const banner = (text, color) => div().mt(10).p(10).rounded(7).border(1).border_color(color).bg(t.surface)
       .text_size(12).text_color(t.foreground).child(text);
 
-    const body = task && v_flex().flex_1().min_h(0).px(18).pb(18).overflow_y_scrollbar()
+    if (task && this.tab === "sessions") this.scanSessions(cx);
+    const body = task && this.tab === "sessions" ? this.sessions(t, banner) : task && v_flex().flex_1().min_h(0).px(18).pb(18).overflow_y_scrollbar()
       .child(h_flex().flex_wrap().gap_x(16).gap_y(4).pt(4)
         .children([
           fact("Spec", task.spec), fact("Repository", task.repository), fact("Workspace", task.workspace),
@@ -674,6 +697,97 @@ class TaskDetails {
       .when(Boolean(body), (el) => el.child(body));
   }
 
+  // Rescans when the rules or the task change; the helper reads the task itself and matches with a time limit.
+  scanSessions(cx) {
+    const saved = savedRules();
+    const key = `${JSON.stringify(saved)}:${this.loads}`;
+    if (this.scan?.key === key) return;
+    const scan = this.scan = { key, records: null, errors: [], error: saved.error ?? "" };
+    if (saved.error || !saved.rules.length) return;
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--sessions", this.ref.board, this.ref.id, JSON.stringify(saved.rules)]);
+        if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        scan.records = reply.records; scan.errors = reply.errors;
+      } catch (e) { scan.error = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  // Every click starts the command again in Core; nothing already running is reused or focused.
+  // It runs as `env -- argv`: `hc run` reads a lone argument with spaces or shell signs as a shell line,
+  // and a first word that names an hc template as that template. env runs exactly the program it is given.
+  launch(record, key, cx) {
+    // Takes the cx of the moment: a click handler's cx is no longer valid inside the spawned task.
+    const show = (cx, text, failed = false) => { this.launches[key] = { text, failed }; cx.notify(); };
+    const space = spaces().find((s) => s.active);
+    if (!space) return show(cx, "No space is selected, so there is no folder to start in.", true);
+    if (space.machine) return show(cx, `Session commands run on this computer, and the selected space is on ${space.machine}.`, true);
+    if (record.argv[0].includes("=")) return show(cx, `Not started: env would read the program name “${record.argv[0]}” as a variable.`, true);
+    const cwd = space.folder || home(); // an empty folder is the space's own: its machine's home (SpaceInfo.folder)
+    // A tab id the App does not know yet becomes a new tab in that space, showing this terminal.
+    const tab = record.tab ? `tb${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}` : null;
+    const labels = tab ? ["--label", `herdr.space=${space.id}`, "--label", `herdr.tab=${tab}`] : [];
+    show(cx, `Starting in ${cwd}…`);
+    cx.spawn(async (cx) => {
+      try {
+        let result;
+        try { result = await hc(["run", "--bg", "--json", "--no-parent", "--cwd", cwd, ...labels, "--", "env", "--", ...record.argv]); }
+        catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
+        const reply = hcReply(result);
+        if (result.code !== 0 || !reply?.address) throw new Error(hcError(result, reply));
+        // A missing program shows only as env exiting at once, so look again before calling it running.
+        await new Promise((resolve) => cx.timer.after(1000, () => resolve()));
+        const got = await hc(["get", reply.address, "--json"]);
+        const term = got.code === 0 ? hcReply(got) : null;
+        if (!term) throw new Error(`Started ${reply.address}, but Core cannot say whether it is still running: ${hcError(got, null)}`);
+        if (term.state !== "live") {
+          // Its tab closed with it, so show how it ended here; only a clean exit 0 is not a failure.
+          const read = await hc(["read", reply.address, "--lines", "6"]);
+          const tail = read.code === 0 ? read.stdout.trim() : "";
+          return show(cx, `${reply.address} ${term.reason ?? "ended"}${term.exit_code != null ? ` with code ${term.exit_code}` : ""} within a second.${tail ? `\n${tail}` : ""}`,
+            term.exit_code !== 0);
+        }
+        if (!tab) return show(cx, `Running in the background as ${reply.address} in ${cwd}.`);
+        show(cx, `Running as ${reply.address} in a new tab in ${space.name}.`);
+        run("tab.select", { id: tab });
+        closeOverlay(props().overlay);
+      } catch (e) { show(cx, e?.message ?? String(e), true); }
+    });
+  }
+
+  sessions(t, banner) {
+    const scan = this.scan;
+    const saved = savedRules();
+    const records = scan?.records ?? [];
+    const note = (text) => div().pt(10).text_size(12.5).text_color(t.dim).child(text);
+    const item = (r) => {
+      const key = JSON.stringify([r.description, r.argv]);
+      const launch = this.launches[key];
+      return v_flex().id(`session-${key}`).flex_none().p(10).gap(4).rounded(7).border(1).border_color(t.border).bg(t.background)
+        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.launch(r, key, cx))
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().min_w(0).text_size(13).text_color(t.foreground).child(r.description || "(empty description)"))
+          .child(div().flex_none().px(6).rounded(5).bg(t.surface).text_size(11.5).text_color(t.muted).child(r.tab ? "New tab" : "Background")))
+        .child(div().text_size(11.5).text_color(t.dim).child(r.argv.map(shown).join(" ")))
+        .when(Boolean(launch), (el) => el.child(div().text_size(12).text_color(launch.failed ? t.blocked : t.muted).child(launch.text)));
+    };
+    return v_flex().flex_1().min_h(0).px(18).pb(18).pt(10).gap(8).overflow_y_scrollbar()
+      .child(div().text_size(11.5).text_color(t.dim).child("Records your session rules find in the description, result, comments and run summaries. "
+        + "A click starts the command again, in the selected space's folder. Settings at the top right edits the rules."))
+      .when(Boolean(scan?.error), (el) => el.child(banner(scan.error, t.blocked)))
+      .children((scan?.errors ?? []).map((e) => banner(e.error, t.blocked)))
+      .when(!saved.error && !saved.rules?.length, (el) => el.child(note("No session rules yet. Add them with Settings at the top right.")))
+      .when(Boolean(saved.rules?.length && scan && !scan.records && !scan.error), (el) => el.child(note("Reading…")))
+      .when(Boolean(scan?.records && !records.length), (el) => el.child(note("The rules find no records in this task.")))
+      .children(records.slice(0, this.shown).map(item))
+      .when(records.length > this.shown, (el) => el.child(h_flex().pt(6).gap(10).items_center()
+        .child(div().text_size(12.5).text_color(t.dim).child(`Showing ${this.shown} of ${records.length} records.`))
+        .child(h_flex().id("sessions-more").h(26).px(9).items_center().rounded(6).border_1().border_color(t.input).bg(t.raised)
+          .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.88))
+          .on_click((_e, cx) => { this.shown += RECORDS_SHOWN; cx.notify(); }).child(`Show ${Math.min(RECORDS_SHOWN, records.length - this.shown)} more`))));
+  }
+
   // Comments, runs and events in time order. Text is rendered as written; nothing is rewritten.
   history(task, t, markdown) {
     const items = [
@@ -689,5 +803,115 @@ class TaskDetails {
     ];
     if (!items.length) return [div().text_size(12.5).text_color(t.dim).child("No history.")];
     return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-history-${i}`).pb(6).child(item.el));
+  }
+}
+
+// The session rules dialog, opened by the Settings control with props { settings }. It edits a copy of the
+// shared rules and saves it only when the helper finds no problem in any rule.
+class SessionSettings {
+  init(cx) {
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    const saved = savedRules();
+    this.malformed = saved.error ? saved : null;
+    this.rows = (saved.rules ?? []).map((r) => this.row(r));
+    this.errors = {}; this.notice = ""; this.saving = false;
+  }
+
+  row(rule = { regex: "", command: "", description: "", tab: true }) {
+    return {
+      regex: InputState.new({ value: rule.regex, placeholder: "e.g. session: (\\S+) harness: claude" }),
+      command: InputState.new({ value: rule.command, placeholder: "e.g. claude --resume $1" }),
+      description: InputState.new({ value: rule.description, placeholder: "e.g. Claude session $1" }),
+      tab: rule.tab,
+    };
+  }
+
+  release(row) { for (const field of ["regex", "command", "description"]) row[field].release(); }
+  close() { this.rows.forEach((row) => this.release(row)); this.rows = []; }
+
+  edit(cx, change) { change(); this.errors = {}; this.notice = ""; cx.notify(); }
+  move(i, step, cx) { this.edit(cx, () => { const [row] = this.rows.splice(i, 1); this.rows.splice(i + step, 0, row); }); }
+  remove(i, cx) { this.edit(cx, () => this.release(this.rows.splice(i, 1)[0])); }
+
+  save(cx) {
+    if (this.saving) return;
+    this.saving = true; this.notice = "";
+    const current = () => this.rows.map((r) => ({ regex: r.regex.value(), command: r.command.value(), description: r.description.value(), tab: r.tab }));
+    const rules = current();
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--check-rules", JSON.stringify(rules)]);
+        if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.errors = {};
+        for (const e of reply.errors) (this.errors[e.rule] ??= []).push(e.error);
+        if (reply.errors.length) { this.notice = "Not saved: fix the rules marked below."; return; }
+        // Typing goes straight into the inputs, so text changed during the check was not checked.
+        if (JSON.stringify(current()) !== JSON.stringify(rules)) { this.notice = "Not saved: the rules changed while they were checked. Save again."; return; }
+        setShared(RULES, { rules });
+        this.malformed = null; this.notice = "Saved.";
+      } catch (e) { this.notice = `Not saved: ${e?.message ?? e}`; }
+      finally { this.saving = false; cx.notify(); }
+    });
+  }
+
+  render(_cx) {
+    const t = theme();
+    const button = (id, text, primary, action) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    const small = (id, text, enabled, action) => h_flex().id(id).h(24).px(8).flex_none().items_center().rounded(6).text_size(12)
+      .text_color(enabled ? t.muted : t.dim).when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action))
+      .child(text);
+    const field = (name, state) => v_flex().gap(3)
+      .child(div().text_size(11.5).text_color(t.dim).child(name))
+      .child(Input.new(state).h(30).px(8).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground));
+    const rule = (row, i) => v_flex().id(`rule-${i}`).flex_none().p(12).gap(8).rounded(8).border(1)
+      .border_color(this.errors[i] ? t.blocked : t.border).bg(t.surface)
+      .child(h_flex().gap(6).items_center()
+        .child(div().flex_1().text_size(12.5).font_semibold().text_color(t.foreground).child(`Rule ${i + 1}`))
+        .child(h_flex().id(`rule-tab-${i}`).gap(6).items_center().cursor_pointer().text_size(12).text_color(t.foreground)
+          .on_click((_e, cx) => this.edit(cx, () => { row.tab = !row.tab; }))
+          .child(h_flex().size(15).flex_none().items_center().justify_center().rounded(4).border_1()
+            .border_color(row.tab ? t.accent : t.input).bg(row.tab ? t.accent : t.background)
+            .text_size(11).text_color(t.accent_foreground).child(row.tab ? "✓" : ""))
+          .child("Open in new tab"))
+        .child(div().w(8))
+        .child(small(`rule-up-${i}`, "Up", i > 0, (_e, cx) => this.move(i, -1, cx)))
+        .child(small(`rule-down-${i}`, "Down", i < this.rows.length - 1, (_e, cx) => this.move(i, 1, cx)))
+        .child(small(`rule-remove-${i}`, "Remove", true, (_e, cx) => this.remove(i, cx))))
+      .child(field("Regex", row.regex))
+      .child(field("Command", row.command))
+      .child(field("Description", row.description))
+      .children((this.errors[i] ?? []).map((text) => div().text_size(12).text_color(t.blocked).child(text)));
+
+    return v_flex().id("session-settings").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground)
+      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
+      .child(h_flex().flex_none().px(18).pt(16).pb(10).gap(10).items_start().border_b(1).border_color(t.border)
+        .child(v_flex().flex_1().min_w(0).gap(4)
+          .child(div().text_size(15).font_semibold().child("Session rules"))
+          .child(div().text_size(11.5).text_color(t.dim).child("Shared by every Shepherd tab. A task's Sessions tab lists what these rules find in its "
+            + "description, result, comments and run summaries. At each place in the text the first rule that matches wins.")))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
+        .child(h_flex().id("settings-close").size(24).flex_none().items_center().justify_center().rounded(6)
+          .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click(() => closeOverlay(props().overlay)).child("✕")))
+      .child(v_flex().id("rules").flex_1().min_h(0).px(18).py(12).gap(10).overflow_y_scrollbar()
+        .child(div().text_size(12).text_color(t.muted).child("Regex: a Python regular expression. Command and Description: $1, $2 … insert capture groups, "
+          + "$0 the whole match, $$ a dollar sign. The command is split into arguments the way a shell would (quotes, backslashes) before "
+          + "captures go in, so a capture is always literal text inside one argument. It runs without a shell, through Herdr Core, "
+          + "in the selected space's folder: in a new tab, or in the background when Open in new tab is off."))
+        .when(Boolean(this.malformed), (el) => el.child(v_flex().p(10).gap(6).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+          .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child(this.malformed.error))
+          .child(div().text_size(12).text_color(t.foreground).child("They are kept as they are. Saving here replaces them with the rules below."))
+          .child(TextView.markdown("settings-raw", `\`\`\`json\n${this.malformed.raw}\n\`\`\``).selectable(true).text_size(12))))
+        .when(!this.rows.length, (el) => el.child(div().text_size(12.5).text_color(t.dim).child("No rules yet.")))
+        .children(this.rows.map(rule))
+        .child(h_flex().child(button("rule-add", "Add rule", false, (_e, cx) => this.edit(cx, () => this.rows.push(this.row()))))))
+      .child(h_flex().flex_none().px(18).py(12).gap(8).items_center().border_t(1).border_color(t.border)
+        .child(div().flex_1().text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice))
+        .child(button("settings-cancel", "Close", false, () => closeOverlay(props().overlay)))
+        .child(button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx))));
   }
 }

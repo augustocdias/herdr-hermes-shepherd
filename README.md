@@ -37,6 +37,19 @@ If the coordinator exits, or `hermes` cannot start, the board shows why, with th
 
 The Cron jobs button at the top right lists the cron jobs of every Hermes profile: name, profile, schedule, state, next run, and the last run with its result or error. The list is read-only. Create, edit, pause or delete jobs with `hermes cron`. Cron jobs are separate from Parked cards, which wait for the workflow, not for a timer.
 
+### Session records
+
+The Settings button at the top right edits an ordered list of session rules, shared by every Shepherd tab in every space. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks every rule first and saves nothing while one has a problem.
+
+- The regex is a Python regular expression. In the command and the description, `$1`, `$2` and so on insert capture groups, `$0` the whole match, and `$$` a dollar sign.
+- The command is split into arguments the way a shell would, with quotes and backslashes, before the captures go in. A capture is always literal text inside one argument, whatever quotes, spaces or `$(…)` it holds.
+
+A task's Sessions tab lists what the rules find in its description, result, comments and run summaries. Each text is read from start to end. Where several rules match, the match that starts first wins, and among matches at the same place the first rule in the list. Reading then goes on after the match. A record with the same command and description as an earlier one is listed once. The Details tab shows the task's text unchanged.
+
+Clicking a record starts its command again every time. Shepherd never reuses or focuses a running one. It runs the command through Herdr Core in the folder of the selected space, as `env -- <command>`, without a shell. Without `env`, `hc run` would treat a single argument with spaces or shell characters as a shell line, and a first word naming an hc template as that template. With Open in new tab checked, the command opens in a new tab of the selected space. Otherwise it runs in the background, where `hc ls` and `hc read` show it. If the program is missing or exits within a second, the record shows its exit code and last lines.
+
+Matching runs in a separate process that Shepherd stops after 3 seconds, so a regex that backtracks catastrophically cannot freeze Herdr. The Sessions tab then names the rule and shows no records for that task. Saved rules that are not a valid rule list are left as they are: Sessions uses none of them, and Settings shows the saved value until Save replaces it.
+
 ## Requirements
 
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
@@ -96,7 +109,7 @@ Without Home Manager, write `[{"label": "Hermes", "mod": "hermes-shepherd"}]` to
 
 ## Development
 
-Run the helpers' tests with the Hermes Python. They build boards and cron jobs in temporary Hermes homes:
+Run the helpers' tests with the Hermes Python. They build boards, cron jobs and session records in temporary Hermes homes:
 
 ```sh
 "$HERMES_PYTHON" -m unittest discover tests

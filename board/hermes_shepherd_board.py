@@ -4,12 +4,16 @@ Usage:
   hermes-shepherd-board [NAME]                         the board's tasks
   hermes-shepherd-board --task BOARD ID                one task's details and history
   hermes-shepherd-board --edit BOARD ID VERSION BODY   replace the task's description
+  hermes-shepherd-board --sessions BOARD ID RULES      session records in the task's text
+  hermes-shepherd-board --check-rules RULES            problems in the session rules
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
 name). Without a match, or without NAME, it reads Hermes's `default` board and
 reports `matched: false`. BOARD is a board slug. VERSION is the `version` that
 `--task` printed when the editor opened; a description changed since then is not
 overwritten. `--edit` exits 2 when it refuses the save, with the task's current details.
+RULES is the JSON list of session rules (see `extract`); matching runs in a child
+process that is stopped after MATCH_SECONDS, so a pathological regex cannot hang.
 
 Run it with the Python interpreter of the Hermes installation, so the native
 `hermes_cli` modules resolve the same HERMES_HOME, board and workflow as the
@@ -19,6 +23,9 @@ command does. Every write goes through Hermes's own task functions.
 """
 import hashlib
 import json
+import re
+import shlex
+import subprocess
 import sys
 
 
@@ -165,13 +172,150 @@ def edit_description(board, task_id, expected, body):
     return reply
 
 
+MATCH_SECONDS = 3
+REFERENCE = re.compile(r"\$(\$|\d+)")  # $N is capture group N ($0: the whole match); $$ is a literal $
+
+
+class Unresolved(Exception):
+    """A template refers to a capture group that has no value in this match."""
+
+
+def substitute(template, groups):
+    def value(ref):
+        if ref[1] == "$":
+            return "$"
+        found = groups[int(ref[1])]
+        if found is None:
+            raise Unresolved(int(ref[1]))
+        return found
+    return REFERENCE.sub(value, template)
+
+
+def compile_rules(rules):
+    """[(pattern, argv template, rule) or None per rule], [errors]. Raises ValueError on a malformed list."""
+    fields = {"regex": str, "command": str, "description": str, "tab": bool}
+    if not isinstance(rules, list) or not all(
+            isinstance(r, dict) and all(isinstance(r.get(k), t) for k, t in fields.items()) for r in rules):
+        raise ValueError("Session rules must be a list of {regex, command, description, tab} entries.")
+    compiled, errors = [], []
+    for i, r in enumerate(rules):
+        try:
+            try:
+                pattern = re.compile(r["regex"])
+            except re.error as exc:
+                raise ValueError(f"the regex is invalid: {exc}") from exc
+            try:
+                # Split before substituting, so captured quotes, spaces and $(...) stay one literal argument each.
+                argv = shlex.split(r["command"])
+            except ValueError as exc:
+                raise ValueError(f"the command cannot be split into arguments: {exc}") from exc
+            if not argv:
+                raise ValueError("the command is empty.")
+            refs = [int(n) for text in [*argv, r["description"]] for n in REFERENCE.findall(text) if n != "$"]
+            if refs and max(refs) > pattern.groups:
+                raise ValueError(f"${max(refs)} refers to a capture group the regex does not have "
+                                 f"(it has {pattern.groups}).")
+            compiled.append((pattern, argv, r))
+        except ValueError as exc:
+            compiled.append(None)
+            errors.append({"rule": i, "error": f"Rule {i + 1}: {exc}"})
+    return compiled, errors
+
+
+def extract(rules, texts, progress=lambda i: None):
+    """Session records in `texts`, in order of appearance, and the rules' errors.
+
+    Each text is scanned left to right. At each occurrence the earliest match wins, and
+    among matches starting at the same place the first rule in the list. Scanning goes on
+    after the match. A record repeating an earlier command and description is dropped.
+    """
+    compiled, errors = compile_rules(rules)
+    usable = [(i, c) for i, c in enumerate(compiled) if c]
+    records, seen = [], set()
+    for text in texts:
+        pos, ahead = 0, {}
+        while True:
+            best = None
+            for i, (pattern, _, _) in usable:
+                # A rule's next match from an earlier position stays its next match until we pass it.
+                if i not in ahead or (ahead[i] is not None and ahead[i].start() < pos):
+                    progress(i)
+                    ahead[i] = pattern.search(text, pos)
+                found = ahead[i]
+                if found and (best is None or found.start() < best[1].start()):
+                    best = (i, found)
+            if not best:
+                break
+            i, found = best
+            pos = found.end() if found.end() > found.start() else found.start() + 1
+            _, argv, rule = compiled[i]
+            groups = (found[0], *found.groups())
+            try:
+                record = {"rule": i, "description": substitute(rule["description"], groups),
+                          "argv": [substitute(arg, groups) for arg in argv], "tab": rule["tab"]}
+            except Unresolved as exc:
+                error = {"rule": i, "error": f"Rule {i + 1} matched “{found[0][:80]}”, but capture group "
+                                             f"{exc.args[0]} has no value there, so it was not resolved."}
+                if error not in errors:
+                    errors.append(error)
+                continue
+            key = (record["description"], tuple(record["argv"]))
+            if key not in seen:
+                seen.add(key)
+                records.append(record)
+    return {"records": records, "errors": errors}
+
+
+def bounded(rules, texts):
+    """`extract` in a child process that is killed after MATCH_SECONDS."""
+    try:
+        done = subprocess.run([sys.executable, "-I", __file__, "--match"], input=json.dumps([rules, texts]),
+                              capture_output=True, text=True, timeout=MATCH_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        searching = (exc.stderr or b"").decode().split()
+        culprit = f" in rule {int(searching[-1]) + 1}" if searching else ""
+        raise RuntimeError(f"Matching took longer than {MATCH_SECONDS} s and was stopped{culprit}. Its regex "
+                           "probably backtracks catastrophically on this text; rewrite it, for example "
+                           "with possessive quantifiers (a++) or atomic groups.") from None
+    if done.returncode != 0:
+        raise RuntimeError(f"Matching failed with exit code {done.returncode}: {done.stderr.strip()[-500:]}")
+    reply = json.loads(done.stdout)
+    if "error" in reply:
+        raise ValueError(reply["error"])
+    return reply
+
+
+def sessions(board, task_id, rules):
+    task = task_details(board, task_id)
+    texts = [task["body"], task["result"] or "", *(c["body"] for c in task["comments"]),
+             *(r["summary"] or "" for r in task["runs"])]
+    return bounded(json.loads(rules), texts)
+
+
+def match():
+    """The child side of `bounded`: reports each rule before searching with it, so a timeout names it."""
+    def progress(i):
+        sys.stderr.write(f"{i}\n")
+        sys.stderr.flush()
+    try:
+        print(json.dumps(extract(*json.load(sys.stdin), progress=progress)))
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+
+
 def main():
     args = sys.argv[1:]
+    if args == ["--match"]:
+        return match()
     try:
         if args[:1] == ["--task"] and len(args) == 3:
             reply = task_details(*args[1:])
         elif args[:1] == ["--edit"] and len(args) == 5:
             reply = edit_description(*args[1:])
+        elif args[:1] == ["--sessions"] and len(args) == 4:
+            reply = sessions(*args[1:])
+        elif args[:1] == ["--check-rules"] and len(args) == 2:
+            reply = {"errors": compile_rules(json.loads(args[1]))[1]}
         else:
             reply = snapshot(*args[:1])
         print(json.dumps(reply))
