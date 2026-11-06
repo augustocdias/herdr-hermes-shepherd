@@ -109,7 +109,7 @@ class TaskDetailsAndEditing(unittest.TestCase):
     setUp, tearDown = BoardSnapshot.setUp, BoardSnapshot.tearDown
     helper, native = BoardSnapshot.helper, BoardSnapshot.native
 
-    def create(self, script="t = kb.create_task(c, title='Task', assignee='programmer', body='Old **body**')"):
+    def create(self, script="t = kb.create_task(c, title='Task', assignee='programmer', body='Old **body**', triage=True)"):
         (task,) = self.native(f"with connect_closing() as c:\n    {script}\n    print(t)")
         return task
 
@@ -127,11 +127,11 @@ class TaskDetailsAndEditing(unittest.TestCase):
     def test_details_show_native_task_with_raw_markdown_history(self):
         parent = self.create("t = kb.create_task(c, title='Parent')")
         task = self.create(f"t = kb.create_task(c, title='Child', assignee='qa', tenant='spec-a', priority=3, "
-                           f"workspace_kind='dir', workspace_path='/src/app', body='# Plan\\n- one', parents=[{parent!r}])")
+                           f"workspace_kind='dir', workspace_path='/src/app', body='# Plan\\n- one', parents=[{parent!r}], triage=True)")
         self.run_native(task, "kb.add_comment(c, {t}, 'reviewer', 'See `code` and **this**')")
         shown = self.details(task)
         self.assertEqual((shown["id"], shown["title"], shown["status"], shown["assignee"], shown["spec"], shown["priority"]),
-                         (task, "Child", "todo", "qa", "spec-a", 3))
+                         (task, "Child", "triage", "qa", "spec-a", 3))
         self.assertEqual(shown["body"], "# Plan\n- one")
         self.assertEqual(shown["repository"], "/src/app")
         self.assertEqual([p["title"] for p in shown["parents"]], ["Parent"])
@@ -163,26 +163,21 @@ class TaskDetailsAndEditing(unittest.TestCase):
         self.assertNotEqual(after["version"], before["version"])
         self.assertNotIn("warning", reply)
 
-    def test_executed_task_stays_locked_after_returning_to_waiting(self):
-        task = self.create()
-        self.run_native(task, "kb.claim_task(c, {t})", "kb.block_task(c, {t}, reason='needs input')",
-                        "kb.unblock_task(c, {t})")
-        shown = self.details(task)
-        self.assertNotEqual(shown["status"], "running")
-        self.assertFalse(shown["editable"])
-        code, reply = self.edit(task, shown["version"], "Rewritten")
-        self.assertEqual(code, 2, reply)
-        self.assertEqual(self.details(task)["body"], "Old **body**")
-
-    def test_never_run_blocked_or_parked_tasks_stay_editable(self):
-        blocked = self.create()
-        self.run_native(blocked, "kb.block_task(c, {t}, reason='waiting on a human')")
-        parked = self.create()
-        self.run_native(parked, "kb.schedule_task(c, {t}, reason='Monday')")
-        for task in (blocked, parked):
+    def test_only_triage_tasks_are_editable(self):
+        never_run = [self.create(f"t = kb.create_task(c, title={title!r}, body='Old **body**')") for title in "ABC"]
+        self.run_native(never_run[1], "kb.block_task(c, {t}, reason='waiting on a human')")
+        self.run_native(never_run[2], "kb.schedule_task(c, {t}, reason='Monday')")
+        executed = self.create()
+        self.run_native(executed, "kb.specify_triage_task(c, {t})", "kb.claim_task(c, {t})",
+                        "kb.block_task(c, {t}, reason='needs input')", "kb.unblock_task(c, {t})")
+        for task in (*never_run, executed):
             shown = self.details(task)
-            self.assertIn(shown["status"], ("blocked", "scheduled"))
-            self.assertTrue(shown["editable"], task)
+            self.assertNotEqual(shown["status"], "triage")
+            self.assertFalse(shown["editable"], shown["status"])
+            self.assertIn("Triage", shown["edit_blocked"])
+            code, reply = self.edit(task, shown["version"], "Rewritten")
+            self.assertEqual(code, 2, reply)
+            self.assertEqual(self.details(task), shown)
 
     def test_archived_task_is_read_only(self):
         task = self.create()
@@ -195,11 +190,11 @@ class TaskDetailsAndEditing(unittest.TestCase):
     def test_start_while_editor_open_rejects_save_and_keeps_native_data(self):
         task = self.create()
         opened = self.details(task)
-        self.run_native(task, "kb.claim_task(c, {t})")
+        self.run_native(task, "kb.specify_triage_task(c, {t})", "kb.claim_task(c, {t})")
         started = self.details(task)
         code, reply = self.edit(task, opened["version"], "Draft")
         self.assertEqual(code, 2, reply)
-        self.assertIn("started", reply["error"])
+        self.assertIn("Running", reply["error"])
         self.assertEqual(reply["task"], started)
 
     def test_description_changed_by_another_writer_rejects_stale_save(self):
@@ -213,7 +208,7 @@ class TaskDetailsAndEditing(unittest.TestCase):
         self.assertEqual(self.details(task)["body"], "Theirs")
 
     def test_claim_racing_the_write_is_reported_not_hidden(self):
-        # The accepted check-then-write window: a claim lands after the recheck, before the write.
+        # The accepted check-then-write window: a move and claim land after the recheck, before the write.
         task = self.create()
         opened = self.details(task)
         status, warned = self.native(f"""
@@ -223,6 +218,7 @@ helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 write = kb.edit_task
 def racing(conn, task_id, **fields):
+    kb.specify_triage_task(conn, task_id)
     kb.claim_task(conn, task_id)
     return write(conn, task_id, **fields)
 kb.edit_task = racing
@@ -312,8 +308,8 @@ with connect_closing() as c:
         (ended,) = [e for e in self.details(task)["events"] if e["kind"] == "archive_worker_termination"]
         self.assertTrue(ended["payload"]["terminated"])
 
-    def test_restore_returns_to_triage_and_reopens_editing_until_the_next_start(self):
-        task = self.create()
+    def test_restored_task_is_editable_because_it_is_in_triage(self):
+        task = self.create("t = kb.create_task(c, title='Task', body='Old')")
         self.run_native(task, "kb.claim_task(c, {t})", "kb.complete_task(c, {t}, summary='done once')",
                         "kb.archive_task(c, {t})", "kb.add_comment(c, {t}, 'me', 'comment while archived')")
         self.assertEqual(self.act(task, "restore", "done")[0], 2)
@@ -324,24 +320,23 @@ with connect_closing() as c:
         self.assertTrue(restored["editable"], restored["edit_blocked"])
         code, reply = self.edit(task, restored["version"], "Refined")
         self.assertEqual(code, 0, reply)
-        # Leaving Triage keeps the exception; the next start ends it.
+        # Leaving Triage locks it again, before any new run.
         self.assertEqual(self.act(task, "ready", "triage")[0], 0)
-        self.assertTrue(self.details(task)["editable"])
-        self.run_native(task, "kb.claim_task(c, {t})")
-        started = self.details(task)
-        self.assertFalse(started["editable"])
-        self.assertEqual(self.edit(task, started["version"], "Late")[0], 2)
+        ready = self.details(task)
+        self.assertFalse(ready["editable"])
+        self.assertEqual(self.edit(task, ready["version"], "Late")[0], 2)
+        self.assertEqual(self.details(task)["body"], "Refined")
 
     def test_a_task_archived_while_running_is_editable_after_restore(self):
-        task = self.create()
+        task = self.create("t = kb.create_task(c, title='Task')")
         self.run_native(task, "kb.claim_task(c, {t})")
         self.assertEqual(self.act(task, "archive", "running")[0], 0)
         self.assertEqual(self.details(task)["events"][-1]["kind"], "archive_worker_termination")
         self.assertEqual(self.act(task, "restore", "archived")[0], 0)
         self.assertTrue(self.details(task)["editable"])
 
-    def test_moving_an_executed_task_back_to_triage_is_not_a_restore(self):
-        task = self.create("t = kb.create_task(c, title='A', triage=True)")
+    def test_an_executed_task_moved_back_to_triage_is_editable(self):
+        task = self.create("t = kb.create_task(c, title='A', body='Old', triage=True)")
         self.act(task, "ready", "triage")
         self.run_native(task, "kb.claim_task(c, {t})", "kb.block_task(c, {t}, reason='x')")
         self.native(f"""
@@ -350,21 +345,22 @@ api.update_task({task!r}, api.UpdateTaskBody(status="triage"), board="default")
 """)
         shown = self.details(task)
         self.assertEqual(shown["status"], "triage")
-        self.assertFalse(shown["editable"])
+        self.assertTrue(shown["editable"], shown["edit_blocked"])
+        code, reply = self.edit(task, shown["version"], "Clarified")
+        self.assertEqual((code, reply["task"]["body"]), (0, "Clarified"), reply)
 
-    def test_restore_after_event_cleanup_stays_locked(self):
-        # gc deleted the archived event, so this restore looks like any move to Triage: fail safe.
-        task = self.create()
+    def test_restore_after_event_cleanup_is_editable(self):
+        task = self.create("t = kb.create_task(c, title='Task')")
         self.run_native(task, "kb.claim_task(c, {t})", "kb.archive_task(c, {t})",
                         "__import__('time').sleep(1.1)", "kb.gc_events(c, older_than_seconds=0)")
         self.assertEqual(self.details(task)["events"], [])
         self.assertEqual(self.act(task, "restore", "archived")[0], 0)
-        self.assertFalse(self.details(task)["editable"])
+        self.assertTrue(self.details(task)["editable"])
 
     def test_delete_is_refused_until_archived_then_removes_task_and_history(self):
         task = self.create()
         self.run_native(task, "kb.add_comment(c, {t}, 'me', 'note')")
-        code, reply = self.act(task, "delete", "ready")
+        code, reply = self.act(task, "delete", "triage")
         self.assertEqual(code, 2, reply)
         self.assertEqual(self.details(task)["comments"][0]["body"], "note")
         self.run_native(task, "kb.archive_task(c, {t})")

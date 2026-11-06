@@ -577,7 +577,7 @@ class TaskDetails {
     });
   }
 
-  // Follows the board like the tab does, so a task that starts shows as locked without a reopen.
+  // Follows the board like the tab does, so a task that leaves Triage shows as locked without a reopen.
   watch(cx) { follow(this, cx, (cx) => this.load(cx)); }
 
   // An unsaved draft outlives the popup (Esc closes it) until it is saved or discarded.
@@ -960,7 +960,7 @@ async function act(ref, action, expected) {
 function announce(action, title, reply) {
   const body = action === "delete" ? "The task and its history are gone."
     : action === "archive" ? "Show archived lists it."
-    : action === "restore" ? "Its description can be edited until it starts again."
+    : action === "restore" ? "Its description can be edited while it stays in Triage."
     : `Hermes shows it in ${status(reply.status)}.${reply.status === "ready" ? " It may start now." : ""}`;
   notify({ title: `${VERB[action]}: ${title}`, body, level: "success" });
 }
@@ -1072,7 +1072,7 @@ class Confirm {
     if (action === "delete") return [`This permanently removes “${task.title}” from Hermes: its description, comments, runs and history, and its links to other tasks. It cannot be undone.`];
     if (action === "restore") return [
       "The task goes back to Triage, not to the column it left, and keeps its history. Hermes does not start it until it is sent to Todo or Ready.",
-      "Its description can be edited again until it next starts.",
+      "Its description can be edited again while it stays in Triage.",
       task.children.length && "A restored task counts as unfinished again: Hermes moves its child tasks, and theirs, that are Ready, Running, Review or Done back to Todo, and stops the workers of running ones.",
     ];
     const path = task.workspace ? ` ${task.workspace}` : "";

@@ -109,45 +109,18 @@ def version(body):
     return hashlib.sha256((body or "").encode()).hexdigest()
 
 
-def restored_at(events):
-    """When Hermes last moved the task from the archive back to Triage, or None.
-
-    Hermes's only restore is the dashboard's move to Triage, which records a `status`
-    event; one that directly follows `archived` is a restore. `hermes kanban gc` never
-    deletes events of a task in Triage, so the restore event lasts while it matters.
-    shortcut: gc may already have deleted the `archived` event of a long-archived task;
-    its restore then stays locked, the safe side. Upgrade if Hermes records restores itself.
-    """
-    restored, previous = None, None
-    for event in events:
-        if event.kind in ("commented", "decomposed"):  # comments may follow archiving; gc keeps decomposed
-            continue
-        if (event.kind == "status" and (event.payload or {}).get("status") == "triage"
-                and previous in ("archived", "archive_worker_termination")):
-            restored = event.created_at
-        previous = event.kind
-    return restored
-
-
-def edit_blocked(task, runs, events=()):
+def edit_blocked(task):
     """Why the description cannot be edited now, or None when it can.
 
-    A task is editable until its first execution. Hermes sets `started_at` when a
-    worker first claims the task and never clears it, and every claim opens a run
-    that keeps its `claim_lock`. Runs without a lock are bookkeeping that Hermes
-    synthesizes when a never-claimed task is blocked or completed, not executions.
-    Status alone proves nothing: an executed task returns to ready, todo or blocked.
-    A task restored from the archive is editable again until its next claim.
+    A description is editable only while the task's native status is triage, whatever
+    states and runs it had before. Hermes claims only Ready tasks, so no new run starts
+    from a Triage task's description while it is being edited.
     """
+    if task.status == "triage":
+        return None
     if task.status == "archived":
         return "Archived tasks are read-only."
-    claims = [run.started_at for run in runs if run.claim_lock]
-    restored = restored_at(events)
-    if restored is not None and all(at < restored for at in claims):
-        return None
-    if task.started_at is not None or claims:
-        return "This task has already started, so its description is locked."
-    return None
+    return f"Only Triage tasks can be edited, and this task is {task.status.capitalize()}, so its description is locked."
 
 
 def details(conn, task_id):
@@ -157,7 +130,7 @@ def details(conn, task_id):
         raise RuntimeError(f"No task {task_id} on this board.")
     runs = kb.list_runs(conn, task_id)
     events = kb.list_events(conn, task_id)
-    blocked = edit_blocked(task, runs, events)
+    blocked = edit_blocked(task)
     graph = kb.task_graph_context(conn, task_id)
     return {
         "id": task.id, "title": task.title, "body": task.body or "", "version": version(task.body),
@@ -191,7 +164,7 @@ def edit_description(board, task_id, expected, body):
         if current["version"] != expected:
             raise Refused("Not saved: the description changed since you opened the editor.", current)
         # shortcut: Hermes's edit_task cannot run inside a caller's write transaction, so this
-        # check and the write are separate; a claim landing between them still lets this save
+        # check and the write are separate; a move out of Triage landing between them still lets this save
         # through (the post-save check below reports it). Upgrade if Hermes gains a guarded edit.
         if not kb.edit_task(conn, task_id, body=body, board=board):
             raise Refused("Not saved: Hermes refused the edit.", details(conn, task_id))
