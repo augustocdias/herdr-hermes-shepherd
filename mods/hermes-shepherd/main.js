@@ -1215,6 +1215,9 @@ class ShepherdPanel {
   // phase: null (follow the live terminal), "checking", "launching", "gone" (ended; waits for Start again) or "failed".
   init(_cx) { this.phase = null; this.error = ""; this.why = null; this.reshow = false; }
 
+  // Nothing to release: the hermes-shepherd terminal outlives the header on purpose (--no-parent).
+  close() {}
+
   live() { return terminals().find((t) => t.state === "live" && t.name === PANEL_TERMINAL); }
 
   status() {
