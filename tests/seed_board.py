@@ -17,7 +17,7 @@ if (home / "kanban.db").exists():
 with connect_closing() as c:
     kb.create_task(c, title="Triage me", triage=True)
     kb.create_task(c, title="Implement login", assignee="programmer", tenant="auth-spec",
-                   body="Repo: /home/user/dev/webapp")
+                   workspace_kind="dir", workspace_path="/home/user/dev/webapp")
     kb.create_task(c, title="Review cache layer", assignee="reviewer", tenant="cache-spec",
                    workspace_kind="dir", workspace_path="/home/user/dev/api")
     kb.schedule_task(c, kb.create_task(c, title="Wait for vendor API", assignee="programmer"),

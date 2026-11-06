@@ -65,7 +65,7 @@ with connect_closing() as c:
         self.assertEqual(tasks[parked]["status"], "scheduled")
         self.assertEqual(tasks[parked]["parked_reason"], "waiting on vendor")
         self.assertEqual((tasks[ready]["assignee"], tasks[ready]["repository"], tasks[ready]["spec"]),
-                         ("programmer", "/src/app", "spec-a"))
+                         ("programmer", None, "spec-a"))
         self.assertEqual(tasks[directory]["repository"], "/src/other")
         self.assertEqual((tasks[triage]["assignee"], tasks[triage]["repository"], tasks[triage]["spec"]), (None, None, None))
 

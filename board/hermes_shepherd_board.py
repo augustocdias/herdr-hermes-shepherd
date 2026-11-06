@@ -13,17 +13,11 @@ Hermes's own connection code, which may migrate an older schema, as any `hermes 
 command does.
 """
 import json
-import re
 import sys
-
-REPO_LINE = re.compile(r"^Repo:[ \t]*(\S.*?)[ \t\r]*$", re.M)
 
 
 def repository(task):
-    """The repository a task declares, or None. Never guessed from scratch workspaces."""
-    match = REPO_LINE.search(task.body or "")
-    if match:
-        return match.group(1)
+    """The folder of a native `dir` workspace, or None. Never guessed from other metadata."""
     if task.workspace_kind == "dir" and task.workspace_path:
         return task.workspace_path
     return None

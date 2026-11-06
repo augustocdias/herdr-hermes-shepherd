@@ -6,7 +6,7 @@ A Herdr App tab that shows a live, read-only view of a Hermes kanban board. It r
 
 - The board's columns in the order Hermes's workflow defines. Hermes's `scheduled` status appears as Parked, with the reason given when the task was parked.
 - Every task that is not archived, including all of Done. Each card shows the title, a round status marker, and the assigned profile or Unassigned.
-- Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the path on a `Repo:` line in its body, else the folder of a `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
+- Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the folder of its native Hermes `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
 - The time of the last successful read. If a read fails, a banner shows the error and the last successful read stays on screen.
 
 The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
