@@ -231,5 +231,152 @@ print(reply["task"]["status"], "earlier description" in reply.get("warning", "")
 """)
         self.assertEqual((status, warned), ("running", "True"))
 
+
+class TriageAndArchive(unittest.TestCase):
+    setUp, tearDown = BoardSnapshot.setUp, BoardSnapshot.tearDown
+    helper, native = BoardSnapshot.helper, BoardSnapshot.native
+    create, run_native, details, edit = (TaskDetailsAndEditing.create, TaskDetailsAndEditing.run_native,
+                                         TaskDetailsAndEditing.details, TaskDetailsAndEditing.edit)
+
+    def act(self, task, action, expected):
+        return self.helper("--act", "default", task, action, expected)
+
+    def test_triage_cards_move_to_todo_or_ready_through_native_moves(self):
+        to_todo = self.create("t = kb.create_task(c, title='A', triage=True)")
+        to_ready = self.create("t = kb.create_task(c, title='B', triage=True)")
+        code, reply = self.act(to_todo, "todo", "triage")
+        self.assertEqual((code, reply["status"]), (0, "todo"), reply)
+        code, reply = self.act(to_ready, "ready", "triage")
+        self.assertEqual((code, reply["status"]), (0, "ready"), reply)
+        self.assertEqual(self.details(to_ready)["events"][-1]["payload"], {"status": "ready", "requested_status": "ready"})
+
+    def test_unfinished_parent_gates_ready_and_leaves_the_task_in_triage(self):
+        parent = self.create("t = kb.create_task(c, title='Parent')")
+        child = self.create(f"t = kb.create_task(c, title='Child', triage=True, parents=[{parent!r}])")
+        before = self.details(child)
+        code, reply = self.act(child, "ready", "triage")
+        self.assertEqual(code, 2, reply)
+        self.assertIn(parent, reply["error"])
+        self.assertEqual(reply["task"]["status"], "triage")
+        self.assertEqual(self.details(child)["events"], before["events"])
+        code, reply = self.act(child, "todo", "triage")
+        self.assertEqual((code, reply["status"]), (0, "todo"), reply)
+
+    def test_a_status_changed_since_the_menu_opened_is_refused_without_a_write(self):
+        task = self.create("t = kb.create_task(c, title='A', triage=True)")
+        self.run_native(task, "kb.specify_triage_task(c, {t})")
+        before = self.details(task)
+        for action, expected in (("ready", "triage"), ("archive", "triage"), ("restore", "triage")):
+            code, reply = self.act(task, action, expected)
+            self.assertEqual(code, 2, reply)
+            self.assertEqual(self.details(task), before)
+        # Only triage cards are sent; the moves are not a general status control.
+        code, reply = self.act(task, "todo", before["status"])
+        self.assertEqual(code, 2, reply)
+
+    def test_archive_keeps_history_and_releases_children(self):
+        parent = self.create("t = kb.create_task(c, title='Parent', assignee='programmer')")
+        child = self.create(f"t = kb.create_task(c, title='Child', parents=[{parent!r}])")
+        self.run_native(parent, "kb.add_comment(c, {t}, 'me', 'keep me')", "kb.claim_task(c, {t})")
+        before = self.details(parent)
+        code, reply = self.act(parent, "archive", "running")
+        self.assertEqual((code, reply["status"]), (0, "archived"), reply)
+        after = self.details(parent)
+        self.assertEqual(after["comments"], before["comments"])
+        self.assertEqual(after["events"][:len(before["events"])], before["events"])
+        self.assertEqual([r["status"] for r in after["runs"]], ["reclaimed"])
+        self.assertEqual(self.details(child)["status"], "ready")
+        _, board = self.helper()
+        self.assertNotIn(parent, [t["id"] for t in board["tasks"]])
+        code, archived = self.helper("--archived", "default")
+        self.assertEqual(code, 0, archived)
+        self.assertEqual([t["id"] for t in archived["tasks"]], [parent])
+
+    def test_archive_stops_a_test_owned_worker_and_cleans_its_scratch_workspace(self):
+        worker = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(worker.kill)
+        (task, workspace) = self.native(f"""
+with connect_closing() as c:
+    path = kb.workspaces_root() / "ws"
+    path.mkdir(parents=True)
+    t = kb.create_task(c, title='Worker', workspace_kind='scratch', workspace_path=str(path))
+    kb.claim_task(c, t)
+    from hermes_cli import kanban_db_dispatch as kbd
+    assert kbd.adopt_worker_pid(c, t, kb.get_task(c, t).current_run_id, {worker.pid})
+    print(t, path)
+""")
+        code, reply = self.act(task, "archive", "running")
+        self.assertEqual(code, 0, reply)
+        self.assertEqual(worker.wait(timeout=30), -15)
+        self.assertFalse(Path(workspace).exists())
+        (ended,) = [e for e in self.details(task)["events"] if e["kind"] == "archive_worker_termination"]
+        self.assertTrue(ended["payload"]["terminated"])
+
+    def test_restore_returns_to_triage_and_reopens_editing_until_the_next_start(self):
+        task = self.create()
+        self.run_native(task, "kb.claim_task(c, {t})", "kb.complete_task(c, {t}, summary='done once')",
+                        "kb.archive_task(c, {t})", "kb.add_comment(c, {t}, 'me', 'comment while archived')")
+        self.assertEqual(self.act(task, "restore", "done")[0], 2)
+        code, reply = self.act(task, "restore", "archived")
+        self.assertEqual((code, reply["status"]), (0, "triage"), reply)
+        restored = self.details(task)
+        self.assertEqual([r["outcome"] for r in restored["runs"]], ["completed"])
+        self.assertTrue(restored["editable"], restored["edit_blocked"])
+        code, reply = self.edit(task, restored["version"], "Refined")
+        self.assertEqual(code, 0, reply)
+        # Leaving Triage keeps the exception; the next start ends it.
+        self.assertEqual(self.act(task, "ready", "triage")[0], 0)
+        self.assertTrue(self.details(task)["editable"])
+        self.run_native(task, "kb.claim_task(c, {t})")
+        started = self.details(task)
+        self.assertFalse(started["editable"])
+        self.assertEqual(self.edit(task, started["version"], "Late")[0], 2)
+
+    def test_a_task_archived_while_running_is_editable_after_restore(self):
+        task = self.create()
+        self.run_native(task, "kb.claim_task(c, {t})")
+        self.assertEqual(self.act(task, "archive", "running")[0], 0)
+        self.assertEqual(self.details(task)["events"][-1]["kind"], "archive_worker_termination")
+        self.assertEqual(self.act(task, "restore", "archived")[0], 0)
+        self.assertTrue(self.details(task)["editable"])
+
+    def test_moving_an_executed_task_back_to_triage_is_not_a_restore(self):
+        task = self.create("t = kb.create_task(c, title='A', triage=True)")
+        self.act(task, "ready", "triage")
+        self.run_native(task, "kb.claim_task(c, {t})", "kb.block_task(c, {t}, reason='x')")
+        self.native(f"""
+from plugins.kanban.dashboard import plugin_api as api
+api.update_task({task!r}, api.UpdateTaskBody(status="triage"), board="default")
+""")
+        shown = self.details(task)
+        self.assertEqual(shown["status"], "triage")
+        self.assertFalse(shown["editable"])
+
+    def test_restore_after_event_cleanup_stays_locked(self):
+        # gc deleted the archived event, so this restore looks like any move to Triage: fail safe.
+        task = self.create()
+        self.run_native(task, "kb.claim_task(c, {t})", "kb.archive_task(c, {t})",
+                        "__import__('time').sleep(1.1)", "kb.gc_events(c, older_than_seconds=0)")
+        self.assertEqual(self.details(task)["events"], [])
+        self.assertEqual(self.act(task, "restore", "archived")[0], 0)
+        self.assertFalse(self.details(task)["editable"])
+
+    def test_delete_is_refused_until_archived_then_removes_task_and_history(self):
+        task = self.create()
+        self.run_native(task, "kb.add_comment(c, {t}, 'me', 'note')")
+        code, reply = self.act(task, "delete", "ready")
+        self.assertEqual(code, 2, reply)
+        self.assertEqual(self.details(task)["comments"][0]["body"], "note")
+        self.run_native(task, "kb.archive_task(c, {t})")
+        code, reply = self.act(task, "delete", "archived")
+        self.assertEqual((code, reply["status"]), (0, None), reply)
+        self.assertEqual(self.helper("--task", "default", task)[0], 1)
+        self.assertEqual(self.native(f"""
+with connect_closing() as c:
+    print(sum(c.execute(f"SELECT COUNT(*) FROM {{table}} WHERE task_id = ?", ({task!r},)).fetchone()[0]
+              for table in ("task_comments", "task_events", "task_runs")))
+"""), ["0"])
+
+
 if __name__ == "__main__":
     unittest.main()

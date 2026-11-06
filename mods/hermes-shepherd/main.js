@@ -3,11 +3,13 @@
 // default board, and the toolbar says so. Repository and spec filters are global.
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
 // it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
-// with props { settings } it is the session rules dialog (SessionSettings).
+// with props { settings } it is the session rules dialog (SessionSettings). With props { actions },
+// { confirm } or { archived } it is a card's action menu, the confirmation of an archive, restore or
+// delete, or the archived-task list (ActionMenu, Confirm, Archived).
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand } from "herdr";
+import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
 
 const MOD = "hermes-shepherd";
 // Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
@@ -18,6 +20,7 @@ const ICONS = {
   coordinator: SVG('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>'),
   cron: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   settings: SVG('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
+  archive: SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/>'),
 };
 (async () => {
   for (const [name, text] of Object.entries(ICONS)) {
@@ -74,6 +77,9 @@ const CONTROLS = [
     run: () => openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560, props: { cron: true } }) },
   { id: "settings", label: "Settings", icon: `mods/${MOD}/settings.svg`,
     run: () => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 860, height: 0.85, props: { settings: true } }) },
+  { id: "archived", label: "Show archived", icon: `mods/${MOD}/archive.svg`,
+    run: (view) => view.data && openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560,
+      props: { archived: { board: view.data.board, name: view.data.board_name, db: view.data.db } } }) },
 ];
 const publishControls = () => {
   const list = CONTROLS.map(({ id, label, icon, active }) => ({ id, label, icon, command: `${MOD}.${id}`, active: Boolean(active?.()) }));
@@ -85,6 +91,8 @@ export default class Shepherd extends View {
   init(_props, cx) {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
+    const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived : null;
+    if (Overlay) { this.details = new Overlay(); this.details.init(cx); return; }
     this.handle = cx.focus_handle();
     if (props()?.menu) { this.at = 0; this.handle.focus(); return; }
     if (props()?.cron) { this.jobs = null; this.error = ""; this.loadCron(cx); this.handle.focus(); return; }
@@ -370,9 +378,12 @@ export default class Shepherd extends View {
   close() { this.details?.close(); }
 
   // Opens the task's details over the board; works for any task on the board, archived ones too.
-  openTask(task) {
-    openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 760, height: 0.85,
-      props: { task: { board: this.data.board, id: task.id, db: this.data.db } } });
+  openTask(task) { openDetails({ board: this.data.board, id: task.id, db: this.data.db }); }
+
+  // The card's menu: Send to Todo or Ready for a Triage card, and Archive for any card.
+  openActions(task) {
+    openOverlay({ mod: MOD, kind: "popup", width: 320, height: task.status === "triage" ? 250 : 132,
+      props: { actions: { board: this.data.board, db: this.data.db, id: task.id, title: task.title, status: task.status } } });
   }
 
   render(cx) {
@@ -423,7 +434,12 @@ export default class Shepherd extends View {
           .when(Boolean(task.parked_reason), (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.parked_reason)))
           .child(h_flex().gap(6).text_size(11.5).min_w(0)
             .child(div().flex_none().text_color(task.assignee ? t.muted : t.dim).child(task.assignee || "Unassigned"))
-            .when(Boolean(task.spec), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(`· ${task.spec}`)))));
+            .when(Boolean(task.spec), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(`· ${task.spec}`)))))
+        // Its own click must not also open the card.
+        .child(h_flex().id(`card-menu-${task.id}`).size(20).flex_none().items_center().justify_center().rounded(5)
+          .text_color(t.dim).hover((s) => s.bg(t.surface).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { col: c, row: r }; this.openActions(task); cx.notify(); })
+          .child("⋯"));
     };
     const column = (c, i) => v_flex().id(`col-${c.key}`).w(CARD + 16).flex_none().h_full().min_h(0).rounded(9).bg(t.surface)
       .child(h_flex().flex_none().h(34).px(10).gap(7).items_center()
@@ -438,6 +454,7 @@ export default class Shepherd extends View {
         if (["left", "right", "up", "down"].includes(e.key)) this.move(e.key, cols);
         else if (e.key === "escape") this.sel = null;
         else if (e.key === "enter" && cols[this.sel?.col]?.tasks[this.sel.row]) this.openTask(cols[this.sel.col].tasks[this.sel.row]);
+        else if (e.key === "m" && cols[this.sel?.col]?.tasks[this.sel.row]) this.openActions(cols[this.sel.col].tasks[this.sel.row]);
         else if (e.key === "r") this.openMenu("repository");
         else if (e.key === "s") this.openMenu("spec");
         else if (e.key === "f5") this.refresh(cx);
@@ -505,6 +522,20 @@ const savedRules = () => {
 const RECORDS_SHOWN = 300; // rows per "Show more": thousands of rows at once make the dialog slow
 const shown = (arg) => /^[\w@%+=:,./-]+$/.test(arg) ? arg : JSON.stringify(arg);
 
+// Calls onChange while owner.open whenever a writer changes the board owner.ref.db (see Shepherd.watch).
+function follow(owner, cx, onChange) {
+  const db = owner.ref.db;
+  if (!db) return;
+  cx.spawn(async (cx) => {
+    try {
+      while (owner.open) {
+        const changed = await watchFolder(db.slice(0, db.lastIndexOf("/")) || "/");
+        if (owner.open && changed.includes(db)) onChange(cx);
+      }
+    } catch {}
+  });
+}
+
 const when = (at) => at ? new Date(at * 1000).toLocaleString() : "";
 const status = (key) => DISPLAY[key] ?? key.replace(/^./, (c) => c.toUpperCase());
 
@@ -547,18 +578,7 @@ class TaskDetails {
   }
 
   // Follows the board like the tab does, so a task that starts shows as locked without a reopen.
-  watch(cx) {
-    const db = this.ref.db;
-    if (!db) return;
-    cx.spawn(async (cx) => {
-      try {
-        while (this.open) {
-          const changed = await watchFolder(db.slice(0, db.lastIndexOf("/")) || "/");
-          if (this.open && changed.includes(db)) this.load(cx);
-        }
-      } catch {}
-    });
-  }
+  watch(cx) { follow(this, cx, (cx) => this.load(cx)); }
 
   // An unsaved draft outlives the popup (Esc closes it) until it is saved or discarded.
   stored() { return (shared(DRAFTS) ?? {})[this.key] ?? null; }
@@ -913,5 +933,248 @@ class SessionSettings {
         .child(div().flex_1().text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice))
         .child(button("settings-cancel", "Close", false, () => closeOverlay(props().overlay)))
         .child(button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx))));
+  }
+}
+
+// Task actions: a card's menu (ActionMenu), the confirmation of an archive, restore or delete (Confirm),
+// and the archived-task list (Archived). Every change runs the helper's --act with the status the person
+// saw; the helper rechecks it and refuses a task that changed, so an open menu or confirmation never acts
+// on stale state. Hermes's own operations make the change; a refusal shows Hermes's reason.
+
+const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 760, height: 0.85, props: { task: ref } });
+const openConfirm = (action, ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 520, height: 340,
+  props: { confirm: { action, board: ref.board, db: ref.db, id: ref.id } } });
+const VERB = { todo: "Send to Todo", ready: "Send to Ready", archive: "Archive", restore: "Restore to Triage", delete: "Delete permanently" };
+// Which status each action needs; archive takes any task that is not archived yet.
+const allowed = (action, state) => action === "archive" ? state !== "archived"
+  : action === "todo" || action === "ready" ? state === "triage" : state === "archived";
+
+// Resolves with the helper's reply; rejects with Hermes's reason and, when refused, the task as it is now.
+async function act(ref, action, expected) {
+  const { code, reply } = await call(["--act", ref.board, ref.id, action, expected]);
+  if (code !== 0) throw Object.assign(new Error(reply.error || `${HELPER} exited with code ${code}`), { task: reply.task });
+  return reply;
+}
+
+// Says where Hermes left the task, which can differ from the column asked for.
+function announce(action, title, reply) {
+  const body = action === "delete" ? "The task and its history are gone."
+    : action === "archive" ? "Show archived lists it."
+    : action === "restore" ? "Its description can be edited until it starts again."
+    : `Hermes shows it in ${status(reply.status)}.${reply.status === "ready" ? " It may start now." : ""}`;
+  notify({ title: `${VERB[action]}: ${title}`, body, level: "success" });
+}
+
+const actionButton = (t, id, text, kind, onClick) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
+  .border_1().border_color(kind === "primary" ? t.solid : kind === "danger" ? t.blocked : t.input)
+  .bg(kind === "primary" ? t.solid : kind === "danger" ? t.blocked : t.raised)
+  .text_color(kind ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
+  .hover((s) => s.opacity(0.88)).on_click(onClick).child(text);
+const errorBox = (t, text) => div().p(8).rounded(7).border(1).border_color(t.blocked).bg(t.surface).text_size(12).text_color(t.foreground).child(text);
+
+class ActionMenu {
+  init(cx) {
+    this.ref = props().actions;
+    this.state = this.ref.status; this.error = ""; this.busy = false; this.at = 0;
+    this.handle = cx.focus_handle(); this.handle.focus();
+  }
+
+  close() {}
+
+  items() { return ["todo", "ready", "archive"].filter((action) => allowed(action, this.state)); }
+
+  choose(action, cx) {
+    if (this.busy) return;
+    if (action === "archive") { closeOverlay(props().overlay); openConfirm("archive", this.ref); return; }
+    // Leaving Triage needs no confirmation: the menu says Hermes takes over.
+    this.busy = true; this.error = "";
+    cx.spawn(async (cx) => {
+      try {
+        const reply = await act(this.ref, action, this.state);
+        closeOverlay(props().overlay);
+        announce(action, this.ref.title, reply);
+      } catch (e) {
+        this.error = e?.message ?? String(e);
+        if (e?.task) this.state = e.task.status;
+      } finally { this.busy = false; this.at = 0; cx.notify(); }
+    });
+  }
+
+  render(cx) {
+    const t = theme();
+    const items = this.items();
+    return v_flex().id("task-actions").track_focus(this.handle).size_full().p(5).gap(2).bg(t.popover).text_size(12.8).overflow_y_scrollbar()
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % items.length;
+        else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
+        else if (e.key === "enter" && items[this.at]) this.choose(items[this.at], cx);
+        else if (e.key === "escape") closeOverlay(props().overlay);
+        else return;
+        cx.stop_propagation(); cx.notify();
+      })
+      .child(div().px(8).pt(4).pb(2).truncate().text_size(11.5).text_color(t.dim).child(this.ref.title))
+      // A refusal takes the explanation's place, so it fits the popup.
+      .when(Boolean(this.error), (el) => el.child(errorBox(t, this.error)))
+      .when(!this.error && this.state === "triage", (el) => el.child(div().px(8).pb(4).text_size(11.5).text_color(t.muted)
+        .child("Leaving Triage hands the task to Hermes, which may start it right away. Hermes keeps it out of Ready while a parent task is unfinished.")))
+      .children(items.map((action, i) => h_flex().id(`action-${action}`).h(31).px(8).flex_none().rounded(7).items_center()
+        .text_color(t.foreground).when(i === this.at, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.choose(action, cx))
+        .child(this.busy && action !== "archive" ? `${VERB[action]}…` : action === "archive" ? "Archive…" : VERB[action])))
+      .when(!items.length, (el) => el.child(div().px(8).text_size(12).text_color(t.muted).child(`The task is ${status(this.state)} now.`)));
+  }
+}
+
+class Confirm {
+  init(cx) {
+    this.ref = props().confirm;
+    this.task = null; this.error = ""; this.busy = false; this.open = true;
+    this.handle = cx.focus_handle(); this.handle.focus();
+    this.load(cx);
+    this.watch(cx);
+  }
+
+  close() { this.open = false; }
+
+  // The explanation and the status sent with the change both come from this read.
+  load(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--task", this.ref.board, this.ref.id]);
+        if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.task = reply;
+      } catch (e) { this.error = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  watch(cx) { follow(this, cx, (cx) => { if (!this.busy) this.load(cx); }); }
+
+  confirm(cx) {
+    const { action } = this.ref;
+    if (this.busy || !this.task || !allowed(action, this.task.status)) return;
+    this.busy = true; this.error = "";
+    cx.spawn(async (cx) => {
+      try {
+        const reply = await act(this.ref, action, this.task.status);
+        closeOverlay(props().overlay);
+        announce(action, this.task.title, reply);
+      } catch (e) {
+        this.error = e?.message ?? String(e);
+        if (e?.task) this.task = e.task;
+      } finally { this.busy = false; cx.notify(); }
+    });
+  }
+
+  // What Hermes does, from the task as it is now.
+  effects(task) {
+    const { action } = this.ref;
+    if (action === "delete") return [`This permanently removes “${task.title}” from Hermes: its description, comments, runs and history, and its links to other tasks. It cannot be undone.`];
+    if (action === "restore") return [
+      "The task goes back to Triage, not to the column it left, and keeps its history. Hermes does not start it until it is sent to Todo or Ready.",
+      "Its description can be edited again until it next starts.",
+      task.children.length && "A restored task counts as unfinished again: Hermes moves its child tasks, and theirs, that are Ready, Running, Review or Done back to Todo, and stops the workers of running ones.",
+    ];
+    const path = task.workspace ? ` ${task.workspace}` : "";
+    // Hermes promotes only Todo and Blocked children whose parents are all finished.
+    const waiting = task.children.filter((c) => ["todo", "blocked"].includes(c.status));
+    return [
+      "The task leaves the board. Its description, comments, runs and history are kept, and Show archived can restore or delete it.",
+      task.status === "running" && "It is running: Hermes ends the run and stops the worker process it started for this task on this computer. Hermes does not stop agents it did not start, such as ones your own plugins launched.",
+      task.workspace && (task.workspace_kind === "scratch" ? `Hermes deletes its scratch workspace${path}, unless a child task still needs it.`
+        : task.workspace_kind === "worktree" ? `Hermes removes its git worktree${path} if it has no uncommitted or unpushed work, unless a child task still needs it.`
+        : `Its folder${path} is kept.`),
+      waiting.length && `Archived tasks count as finished for their children, so ${waiting.map((c) => `“${c.title}”`).join(", ")} may move to Ready and start.`,
+    ];
+  }
+
+  render(cx) {
+    const t = theme();
+    const { action } = this.ref;
+    const task = this.task;
+    const ok = task && allowed(action, task.status);
+    return v_flex().id("confirm-action").track_focus(this.handle).size_full().min_h(0).p(18).gap(10).bg(t.popover).text_size(13)
+      .on_key_down((e, cx) => {
+        // Enter confirms, except a permanent delete, which takes a click.
+        if (e.key === "enter" && action !== "delete") this.confirm(cx);
+        else if (e.key === "escape") closeOverlay(props().overlay);
+        else return;
+        cx.stop_propagation();
+      })
+      .child(h_flex().items_center().gap(8)
+        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground)
+          .child(`${action === "archive" ? "Archive" : action === "restore" ? "Restore" : "Delete"} “${task?.title ?? "…"}”?`))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(v_flex().flex_1().min_h(0).gap(8).overflow_y_scrollbar().text_color(t.muted)
+        .when(Boolean(task && !ok), (el) => el.child(div().text_color(t.foreground).child(`The task is ${status(task.status)} now, so it cannot be ${action === "archive" ? "archived" : action === "restore" ? "restored" : "deleted"}.`)))
+        .when(Boolean(ok), (el) => el.children(this.effects(task).filter(Boolean).map((text) => div().child(text))))
+        .when(Boolean(this.error), (el) => el.child(errorBox(t, this.error))))
+      .child(h_flex().justify_end().gap(8)
+        .child(actionButton(t, "confirm-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+        .when(Boolean(ok), (el) => el.child(actionButton(t, "confirm-yes", this.busy ? "Working…" : VERB[action],
+          action === "delete" ? "danger" : "primary", (_e, cx) => this.confirm(cx)))));
+  }
+}
+
+class Archived {
+  init(cx) {
+    this.ref = props().archived;
+    this.tasks = null; this.error = ""; this.open = true; this.at = 0;
+    this.handle = cx.focus_handle(); this.handle.focus();
+    this.load(cx);
+    this.watch(cx);
+  }
+
+  close() { this.open = false; }
+
+  load(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--archived", this.ref.board]);
+        if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.tasks = reply.tasks; this.error = "";
+      } catch (e) { this.error = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  watch(cx) { follow(this, cx, (cx) => this.load(cx)); }
+
+  render(cx) {
+    const t = theme();
+    const ref = (task) => ({ board: this.ref.board, db: this.ref.db, id: task.id });
+    const small = (id, text, onClick) => h_flex().id(id).h(24).px(8).flex_none().items_center().rounded(6).text_size(12)
+      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(); }).child(text);
+    const tasks = this.tasks ?? [];
+    const row = (task, i) => h_flex().id(`archived-${task.id}`).flex_none().p(10).gap(8).items_center().rounded(8)
+      .border(1).border_color(i === this.at ? t.accent : t.border).bg(t.background).hover((s) => s.bg(t.hover))
+      .on_click(() => openDetails(ref(task)))
+      .child(v_flex().flex_1().min_w(0).gap(3)
+        .child(div().truncate().text_size(13).text_color(t.foreground).child(task.title))
+        .child(div().truncate().text_size(11.5).text_color(t.dim)
+          .child([task.assignee || "Unassigned", task.spec, task.id].filter(Boolean).join(" · "))))
+      .child(small(`restore-${task.id}`, "Restore…", () => openConfirm("restore", ref(task))))
+      .child(small(`delete-${task.id}`, "Delete…", () => openConfirm("delete", ref(task))));
+    return v_flex().id("shepherd-archived").track_focus(this.handle).size_full().bg(t.popover)
+      .on_key_down((e, cx) => {
+        const task = tasks[Math.min(this.at, tasks.length - 1)];
+        if (e.key === "down" || e.key === "up") this.at = Math.max(0, Math.min(tasks.length - 1, this.at + (e.key === "down" ? 1 : -1)));
+        else if (e.key === "enter" && task) openDetails(ref(task));
+        else if (e.key === "r" && task) openConfirm("restore", ref(task));
+        else if (e.key === "d" && task) openConfirm("delete", ref(task));
+        else if (e.key === "escape") closeOverlay(props().overlay);
+        else return;
+        cx.stop_propagation(); cx.notify();
+      })
+      .child(h_flex().flex_none().px(14).py(10).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().text_size(14).font_semibold().text_color(t.foreground).child(`Archived tasks · ${this.ref.name}`))
+          .child(div().text_size(11.5).text_color(t.dim).child("Click or Enter reads a task. Restore (r) returns it to Triage; Delete (d) removes it for good.")))
+        .child(small("archived-close", "Close", () => closeOverlay(props().overlay))))
+      .child(v_flex().id("archived-list").flex_1().min_h(0).p(12).gap(8).overflow_y_scrollbar()
+        .when(Boolean(this.error), (el) => el.child(errorBox(t, `Cannot read archived tasks. ${this.error}`)))
+        .when(Boolean(this.tasks && !this.tasks.length), (el) => el.child(div().text_size(12.5).text_color(t.muted).child("No archived tasks on this board.")))
+        .children(tasks.map(row)));
   }
 }

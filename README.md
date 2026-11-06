@@ -1,6 +1,6 @@
 # Hermes Shepherd
 
-A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. The one change it makes is the description edit described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
+A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. It changes the board only through the description edit and the task actions described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
 
 ## What the tab shows
 
@@ -9,7 +9,7 @@ A Herdr App tab that shows a live view of a Hermes kanban board. It reads and ed
 - Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the folder of its native Hermes `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
 - The time of the last successful read. If a read fails, a banner shows the error and the last successful read stays on screen.
 
-The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, Enter opens the selected card, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
+The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, Enter opens the selected card, `m` opens its menu, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
 
 ### Task details
 
@@ -18,6 +18,24 @@ Clicking a card, or pressing Enter on it, opens the task in a dialog over the bo
 You can edit the description of a task that has never started. Hermes records a task's first start (`started_at`, and a claimed run), and neither goes away when the task later returns to Ready, Todo or Blocked, so a task that ever ran stays locked. Archived tasks are read-only.
 
 Save checks again, right before writing, that the task has still never started and that its description is still the one you began editing. If either check fails, nothing is written and your draft stays in the editor. When someone else changed the description, close the editor to read the new text; saving again then replaces it with your draft. A draft survives closing the dialog until you save or discard it. If the task starts first, the draft opens read-only so you can copy or discard it. Hermes cannot make that check and its write one transaction, so a worker that claims the task in the instant between them still gets the save through; the dialog then warns that the worker may have the earlier description.
+
+A task restored from the archive to Triage is the one exception to that lock. Its description can be edited again until a worker next claims it. Shepherd recognizes a restore by Hermes's `status` event that moved the task from the archive to Triage right after its `archived` event. If `hermes kanban gc` already deleted that `archived` event, the restored task stays locked.
+
+### Task actions
+
+Every card has a menu (the `⋯` button). A Triage card offers Send to Todo and Send to Ready. Either one runs at once, without a confirmation: leaving Triage hands the task to Hermes, which may start it right away. Shepherd asks Hermes for the move through the handler that Hermes's own dashboard uses, so Hermes's dependency rule applies. Hermes refuses Ready while a parent task is unfinished, and the menu shows its reason. The task then stays in Triage.
+
+Every card's menu also offers Archive, which asks first. The confirmation lists what Hermes will do to this task:
+
+- A running task's run ends, and Hermes stops the worker process it started for the task on this computer. Hermes does not stop agents it did not start, such as ones your own plugins launched.
+- Hermes deletes a scratch workspace unless a child task still needs it, removes a git worktree only if it has no uncommitted or unpushed work and no child task still needs it, and keeps a `dir` folder.
+- Archived tasks count as finished for their children, so Todo and Blocked children whose other parents are finished may move to Ready and start.
+
+Archiving keeps the description, comments, runs and history. Hermes's own `hermes kanban gc` may later delete old events of archived tasks.
+
+Show archived, at the top right, lists the board's archived tasks. Click one to read its details. Restore moves it back to Triage, never to its old column, after a confirmation. A restored task counts as unfinished again, so Hermes moves its descendants that are Ready, Running, Review or Done back to Todo and stops their running workers. Delete removes an archived task, its comments, runs, history and links for good, through Hermes's archived-only delete. It asks first, and Enter does not confirm it.
+
+Each action sends the status the task had when you chose it. If the task changed since, nothing happens and the menu or confirmation shows the task as it is now. Hermes cannot make that check and the change one transaction, so a change landing in the instant between them is not caught.
 
 ### Which board a tab shows
 

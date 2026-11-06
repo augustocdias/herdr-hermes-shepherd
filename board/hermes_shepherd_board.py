@@ -1,19 +1,22 @@
-"""Read and edit one Hermes kanban board for the Hermes Shepherd mod. Prints JSON.
+"""Read and change one Hermes kanban board for the Hermes Shepherd mod. Prints JSON.
 
 Usage:
   hermes-shepherd-board [NAME]                         the board's tasks
+  hermes-shepherd-board --archived BOARD               the board's archived tasks
   hermes-shepherd-board --task BOARD ID                one task's details and history
   hermes-shepherd-board --edit BOARD ID VERSION BODY   replace the task's description
   hermes-shepherd-board --sessions BOARD ID RULES      session records in the task's text
   hermes-shepherd-board --check-rules RULES            problems in the session rules
+  hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, archive, restore or delete
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
 name). Without a match, or without NAME, it reads Hermes's `default` board and
 reports `matched: false`. BOARD is a board slug. VERSION is the `version` that
 `--task` printed when the editor opened; a description changed since then is not
-overwritten. `--edit` exits 2 when it refuses the save, with the task's current details.
-RULES is the JSON list of session rules (see `extract`); matching runs in a child
-process that is stopped after MATCH_SECONDS, so a pathological regex cannot hang.
+overwritten. STATUS is the task's status when the person chose ACTION; a task that has
+changed since is left alone. `--edit` and `--act` exit 2 when they refuse, with the task's
+current details. RULES is the JSON list of session rules (see `extract`); matching runs
+in a child process that is stopped after MATCH_SECONDS, so a pathological regex cannot hang.
 
 Run it with the Python interpreter of the Hermes installation, so the native
 `hermes_cli` modules resolve the same HERMES_HOME, board and workflow as the
@@ -106,7 +109,27 @@ def version(body):
     return hashlib.sha256((body or "").encode()).hexdigest()
 
 
-def edit_blocked(task, runs):
+def restored_at(events):
+    """When Hermes last moved the task from the archive back to Triage, or None.
+
+    Hermes's only restore is the dashboard's move to Triage, which records a `status`
+    event; one that directly follows `archived` is a restore. `hermes kanban gc` never
+    deletes events of a task in Triage, so the restore event lasts while it matters.
+    shortcut: gc may already have deleted the `archived` event of a long-archived task;
+    its restore then stays locked, the safe side. Upgrade if Hermes records restores itself.
+    """
+    restored, previous = None, None
+    for event in events:
+        if event.kind in ("commented", "decomposed"):  # comments may follow archiving; gc keeps decomposed
+            continue
+        if (event.kind == "status" and (event.payload or {}).get("status") == "triage"
+                and previous in ("archived", "archive_worker_termination")):
+            restored = event.created_at
+        previous = event.kind
+    return restored
+
+
+def edit_blocked(task, runs, events=()):
     """Why the description cannot be edited now, or None when it can.
 
     A task is editable until its first execution. Hermes sets `started_at` when a
@@ -114,10 +137,15 @@ def edit_blocked(task, runs):
     that keeps its `claim_lock`. Runs without a lock are bookkeeping that Hermes
     synthesizes when a never-claimed task is blocked or completed, not executions.
     Status alone proves nothing: an executed task returns to ready, todo or blocked.
+    A task restored from the archive is editable again until its next claim.
     """
     if task.status == "archived":
         return "Archived tasks are read-only."
-    if task.started_at is not None or any(run.claim_lock for run in runs):
+    claims = [run.started_at for run in runs if run.claim_lock]
+    restored = restored_at(events)
+    if restored is not None and all(at < restored for at in claims):
+        return None
+    if task.started_at is not None or claims:
         return "This task has already started, so its description is locked."
     return None
 
@@ -128,16 +156,18 @@ def details(conn, task_id):
     if task is None:
         raise RuntimeError(f"No task {task_id} on this board.")
     runs = kb.list_runs(conn, task_id)
-    blocked = edit_blocked(task, runs)
+    events = kb.list_events(conn, task_id)
+    blocked = edit_blocked(task, runs, events)
     graph = kb.task_graph_context(conn, task_id)
     return {
         "id": task.id, "title": task.title, "body": task.body or "", "version": version(task.body),
         "status": task.status, "assignee": task.assignee, "priority": task.priority, "spec": task.tenant,
-        "repository": repository(task), "workspace": task.workspace_path, "result": task.result,
+        "repository": repository(task), "workspace": task.workspace_path, "workspace_kind": task.workspace_kind,
+        "result": task.result,
         "created_at": task.created_at, "started_at": task.started_at, "completed_at": task.completed_at,
         "parents": graph["parents"], "children": graph["children"],
         "comments": [{"author": c.author, "body": c.body, "at": c.created_at} for c in kb.list_comments(conn, task_id)],
-        "events": [{"kind": e.kind, "payload": e.payload, "at": e.created_at} for e in kb.list_events(conn, task_id)],
+        "events": [{"kind": e.kind, "payload": e.payload, "at": e.created_at} for e in events],
         "runs": [{"profile": r.profile, "status": r.status, "outcome": r.outcome, "summary": r.summary, "error": r.error,
                   "started_at": r.started_at, "ended_at": r.ended_at} for r in runs],
         "editable": blocked is None, "edit_blocked": blocked,
@@ -301,6 +331,59 @@ def match():
         print(json.dumps(extract(*json.load(sys.stdin), progress=progress)))
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))
+def archived(board):
+    kb, _, _ = hermes()
+    path, connection = open_board(board)
+    with connection as conn:
+        tasks = [{"id": t.id, "title": t.title, "assignee": t.assignee, "spec": t.tenant, "repository": repository(t)}
+                 for t in kb.list_tasks(conn, status="archived")]
+    return {"board": board, "db": str(path), "tasks": tasks}
+
+
+# What each action needs the task to be now, and the column it asks Hermes for.
+ACTIONS = {"todo": ("triage", "todo"), "ready": ("triage", "ready"), "restore": ("archived", "triage"),
+           "archive": (None, "archived"), "delete": ("archived", None)}
+
+
+def act(board, task_id, action, expected):
+    """Make one change through Hermes's own operations, if the task is still as the person saw it.
+
+    Todo, Ready and restore are Hermes's manual moves, made by its dashboard's own handler,
+    which applies Hermes's dependency gate and reports what refused the move. Archive and
+    delete are Hermes's archive and archived-only delete. Shepherd never writes a status.
+    """
+    kb, _, workflow = hermes()
+    if action not in ACTIONS:
+        raise RuntimeError(f"Unknown action {action}.")
+    source, target = ACTIONS[action]
+    _, connection = open_board(board)
+    with connection as conn:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            raise RuntimeError(f"No task {task_id} on this board.")
+        if task.status != expected:
+            raise Refused(f"Nothing changed: the task is {task.status} now, not {expected}.", details(conn, task_id))
+        if source not in (None, task.status) or (target and not workflow.can_move(task.status, target)):
+            raise Refused(f"Nothing changed: Hermes Shepherd does not {action} a task that is {task.status}.",
+                          details(conn, task_id))
+        # shortcut: Hermes has no compare-and-set for these moves, so a change landing between the check
+        # above and the write below is not caught; the reply shows the status Hermes ended with.
+        if action == "archive":
+            ok, error = kb.archive_task(conn, task_id), "Hermes did not archive it."
+        elif action == "delete":
+            ok, error = kb.delete_archived_task(conn, task_id), "Hermes deletes only archived tasks."
+        else:
+            from plugins.kanban.dashboard import plugin_api as api  # Hermes's dashboard; only moves need it
+            try:
+                api.update_task(task_id, api.UpdateTaskBody(status=target), board=board)
+                ok, error = True, None
+            except api.HTTPException as exc:
+                ok, error = False, str(exc.detail)
+        if not ok:
+            raise Refused(f"Nothing changed: {error}", details(conn, task_id))
+        after = kb.get_task(conn, task_id)
+        return {"done": action, "status": after.status if after else None,
+                "task": details(conn, task_id) if after else None}
 
 
 def main():
@@ -316,6 +399,10 @@ def main():
             reply = sessions(*args[1:])
         elif args[:1] == ["--check-rules"] and len(args) == 2:
             reply = {"errors": compile_rules(json.loads(args[1]))[1]}
+        elif args[:1] == ["--archived"] and len(args) == 2:
+            reply = archived(args[1])
+        elif args[:1] == ["--act"] and len(args) == 5:
+            reply = act(*args[1:])
         else:
             reply = snapshot(*args[:1])
         print(json.dumps(reply))
