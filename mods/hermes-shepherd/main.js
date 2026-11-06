@@ -54,7 +54,7 @@ const activeTab = () => spaces().find((s) => s.active)?.tabs.find((t) => t.activ
 
 // The Shepherd panel is a block the person adds to their own layout (README: The Shepherd panel):
 // a header (this mod with props { panel }) above a `{ "terminal": PANEL_TERMINAL }` block.
-// That one terminal runs the user's own `hermes -p coordinator` through the `hermes` on Core's PATH,
+// That one terminal runs the user's own `hermes -p <profile>` through the `hermes` on Core's PATH,
 // so their wrapper and jail apply. It serves every space and is restarted only by the person.
 // Herdr App deletes a layout's terminal block, and rewrites the layout around it, when the terminal
 // ends, so a shell keeps the terminal alive after Hermes exits: it records the exit code as a label
@@ -62,12 +62,24 @@ const activeTab = () => spaces().find((s) => s.active)?.tabs.find((t) => t.activ
 const PANEL = "shepherd"; // layout node ids the README's snippet uses
 const PANEL_BLOCK = "shepherd-terminal";
 const PANEL_TERMINAL = "hermes-shepherd";
-const COORDINATOR_ARGV = ["hermes", "-p", "coordinator"];
+const PROFILE = "coordinator"; // the Hermes profile the Shepherd panel opens until Settings saves another
 const EXIT = "hermes-shepherd.exit"; // label: Hermes's last exit code, absent while it runs
+const RUNNING_PROFILE = "hermes-shepherd.profile"; // label: the profile the runner last started Hermes with
+// The profile Settings saved, as a hidden file the runner reads at every start, so Enter and Restart pick up a change.
+// Hidden files in the mod folder do not reload the mod.
+const profileFile = () => `${appHome()}/mods/${MOD}/.profile`;
+const writeProfile = async (profile) => {
+  let current = null;
+  try { current = await readTextFile(profileFile()); } catch {}
+  if (current !== profile) await writeTextFile(profileFile(), profile, current);
+};
+// $1 is the profile file; the rest is the hermes command. The profile is one argument after -p, never parsed by the shell.
 const RUNNER = `trap : INT QUIT
+file=$1; shift
 while :; do
-  hc label "$HC_TERMINAL_ID" ${EXIT}= >/dev/null 2>&1
-  "$@"; code=$?
+  profile=$(cat "$file" 2>/dev/null); [ -n "$profile" ] || profile=${PROFILE}
+  hc label "$HC_TERMINAL_ID" ${EXIT}= ${RUNNING_PROFILE}="$profile" >/dev/null 2>&1
+  "$@" -p "$profile"; code=$?
   # Drop keys typed while Hermes ran, so only a new Enter starts it again; the label then offers Restart.
   while read -r -t 1 _ 2>/dev/null; do :; done
   hc label "$HC_TERMINAL_ID" ${EXIT}=$code >/dev/null 2>&1
@@ -83,13 +95,8 @@ const stamp = (iso) => { const d = iso && new Date(iso); return d && !isNaN(d) ?
 
 // Top-right tab-bar controls, published as herdr-navigation's `tab-controls:hermes-shepherd`.
 // Add a control with one entry: Smart Tabs runs `hermes-shepherd.<id>`, which reaches `run` in the shown copy.
-// Published when the board renders; an unchanged list is not written again.
+// Published when a board opens; an unchanged list is not written again.
 const CONTROLS = [
-  // Like Files and Changes, the control only shows and hides the panel; the layout keeps its width.
-  { id: "shepherd", label: "Shepherd", icon: `mods/${MOD}/coordinator.svg`,
-    active: () => { const panel = findNode(layout(), PANEL); return Boolean(panel && !panel.hidden); },
-    run: () => findNode(layout(), PANEL) ? run("layout.toggle", { id: PANEL })
-      : notify({ title: "Shepherd is not in this layout", level: "warning", body: "Add the README's layout snippet." }) },
   { id: "cron", label: "Cron jobs", icon: `mods/${MOD}/cron.svg`,
     run: () => openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560, props: { cron: true } }) },
   { id: "settings", label: "Settings", icon: `mods/${MOD}/settings.svg`,
@@ -102,7 +109,7 @@ const CONTROLS = [
         body: view.error ? "The board did not load; see it, then Retry." : "The board is still loading; try again." }) },
 ];
 const publishControls = () => {
-  const list = CONTROLS.map(({ id, label, icon, active }) => ({ id, label, icon, command: `${MOD}.${id}`, active: Boolean(active?.()) }));
+  const list = CONTROLS.map(({ id, label, icon }) => ({ id, label, icon, command: `${MOD}.${id}` }));
   const key = `tab-controls:${MOD}`;
   if (JSON.stringify(shared(key)) !== JSON.stringify(list)) setShared(key, list);
 };
@@ -291,7 +298,6 @@ export default class Shepherd extends View {
     if (props()?.menu) return this.renderMenu(props().menu);
     if (props()?.cron) return this.renderCron();
     if (this.requested !== undefined) this.sync(cx);
-    publishControls();
     const t = theme();
     const filters = shared(FILTERS) ?? {};
     const cols = this.columns();
@@ -416,20 +422,22 @@ const DRAFTS = "hermes-shepherd.drafts";
 // The popup's tabs. A tab without a label shows the records tab name the user set in Settings.
 const TABS = [{ key: "details", label: "Details" }, { key: "sessions" }];
 
-// Record rules and the records tab's name, global like the filters: { name?, rules: [{ regex, command, description, tab }] }.
+// Record rules, the records tab's name and the panel's Hermes profile, global like the filters:
+// { name?, profile?, rules: [{ regex, command, description, tab }] }.
 // The helper matches the rules in a child process it stops after a few seconds, so no regex runs while rendering.
 const RULES = "hermes-shepherd.sessions";
 const TAB_NAME = "Links"; // the records tab's name until Settings saves another
 const RULE_FIELDS = { regex: "string", command: "string", description: "string", tab: "boolean" };
-// { name, rules }, or { name, error, raw } when the saved value is malformed. Only Save in Settings replaces it.
+// { name, profile, rules }, or { name, profile, error, raw } when the saved value is malformed. Only Save in Settings replaces it.
 const savedRules = () => {
   const saved = shared(RULES);
-  if (saved == null) return { name: TAB_NAME, rules: [] };
+  if (saved == null) return { name: TAB_NAME, profile: PROFILE, rules: [] };
   const rules = saved.rules;
   const name = saved.name ?? TAB_NAME; // saved before the name was configurable
-  if (typeof name === "string" && name.trim() && Array.isArray(rules)
-    && rules.every((r) => r && Object.entries(RULE_FIELDS).every(([k, type]) => typeof r[k] === type))) return { name, rules };
-  return { name: TAB_NAME, error: "The saved settings are not a tab name and a list of { regex, command, description, tab } rules, so no rules are used.",
+  const profile = saved.profile ?? PROFILE; // saved before the profile was configurable
+  if (typeof name === "string" && name.trim() && typeof profile === "string" && profile.trim() && Array.isArray(rules)
+    && rules.every((r) => r && Object.entries(RULE_FIELDS).every(([k, type]) => typeof r[k] === type))) return { name, profile, rules };
+  return { name: TAB_NAME, profile: PROFILE, error: "The saved settings are not a tab name, a profile and a list of { regex, command, description, tab } rules, so no rules are used.",
     raw: JSON.stringify(saved, null, 2) };
 };
 const RECORDS_SHOWN = 300; // rows per "Show more": thousands of rows at once make the dialog slow
@@ -779,6 +787,7 @@ class SessionSettings {
     const saved = savedRules();
     this.malformed = saved.error ? saved : null;
     this.name = InputState.new({ value: saved.name, placeholder: TAB_NAME });
+    this.profile = InputState.new({ value: saved.profile, placeholder: PROFILE });
     this.rows = (saved.rules ?? []).map((r) => this.row(r));
     this.errors = {}; this.notice = ""; this.saving = false; this.confirming = false;
     this.clean = JSON.stringify(this.current());
@@ -793,7 +802,7 @@ class SessionSettings {
   }
 
   current() {
-    return { name: this.name.value().trim(),
+    return { name: this.name.value().trim(), profile: this.profile.value().trim(),
       rules: this.rows.map((r) => ({ regex: r.regex.value(), command: r.command.value(), description: r.description.value(), tab: r.tab })) };
   }
 
@@ -817,7 +826,7 @@ class SessionSettings {
   }
 
   release(row) { for (const field of ["regex", "command", "description"]) row[field].release(); }
-  close() { this.closed = true; this.rows.forEach((row) => this.release(row)); this.rows = []; this.name.release(); }
+  close() { this.closed = true; this.rows.forEach((row) => this.release(row)); this.rows = []; this.name.release(); this.profile.release(); }
 
   edit(cx, change) { change(); this.errors = {}; this.notice = ""; this.confirming = false; cx.notify(); }
   move(i, step, cx) {
@@ -833,6 +842,7 @@ class SessionSettings {
     this.notice = ""; this.confirming = false;
     const settings = this.current();
     if (!settings.name) { this.notice = "Not saved: the tab name is empty."; return cx.notify(); }
+    if (!settings.profile) { this.notice = "Not saved: the Hermes profile is empty."; return cx.notify(); }
     this.saving = true;
     cx.spawn(async (cx) => {
       try {
@@ -841,10 +851,14 @@ class SessionSettings {
         this.errors = {};
         for (const e of reply.errors) (this.errors[e.rule] ??= []).push(e.error);
         if (reply.errors.length) { this.notice = "Not saved: fix the rules marked below."; return; }
+        const checked = await call(["--check-profile", settings.profile]);
+        if (checked.code !== 0 || checked.reply.error) { this.notice = `Not saved: ${checked.reply.error || `${HELPER} exited with code ${checked.code}`}`; return; }
         // Typing goes straight into the inputs, so text changed during the check was not checked.
         if (this.closed) return; // discarded while the check ran
         if (JSON.stringify(this.current()) !== JSON.stringify(settings)) { this.notice = "Not saved: the settings changed while they were checked. Save again."; return; }
         setShared(RULES, settings);
+        // The panel's runner reads the file at its next start; a failed write is reported, the setting is kept.
+        try { await writeProfile(settings.profile); } catch (e) { this.notice = `Saved, but the panel cannot read the new profile yet: ${e?.message ?? e}`; return; }
         this.clean = JSON.stringify(settings);
         this.malformed = null; this.notice = "Saved.";
       } catch (e) { this.notice = `Not saved: ${e?.message ?? e}`; }
@@ -911,6 +925,7 @@ class SessionSettings {
           .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => this.leave(cx)).child("✕")))
       .child(v_flex().id("rules").flex_1().min_h(0).px(18).py(12).gap(10).overflow_y_scrollbar()
+        .child(field("Hermes profile: the Shepherd panel runs `hermes -p <profile>`; a change applies at its next start or Restart", this.profile))
         .child(field("Records tab name: the task popup's tab that lists the records", this.name))
         .child(div().pt(6).text_size(12.5).font_semibold().text_color(t.foreground).child("Rules"))
         .child(div().text_size(12).text_color(t.muted).child("Regex: a Python regular expression. Command and Description: $1, $2 … insert capture groups, "
@@ -934,7 +949,7 @@ class SessionSettings {
           button("settings-keep", "Keep editing", false, (_e, cx) => { this.confirming = false; cx.notify(); }),
           button("settings-discard", "Discard", true, () => closeOverlay(props().overlay)),
         ] : [
-          div().flex_1().text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice),
+          div().flex_1().min_w(0).text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice),
           button("settings-cancel", "Close", false, (_e, cx) => this.leave(cx)),
           button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx)),
         ]));
@@ -1237,9 +1252,10 @@ class ShepherdPanel {
     this.phase = "launching";
     cx.spawn(async (cx) => {
       try {
+        await writeProfile(savedRules().profile);
         let result;
         try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", PANEL_TERMINAL, "--cwd", home(),
-          "--", "sh", "-c", RUNNER, PANEL_TERMINAL, ...COORDINATOR_ARGV]); }
+          "--", "sh", "-c", RUNNER, PANEL_TERMINAL, profileFile(), "hermes"]); }
         catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
         if (result.code !== 0) {
           // Another screen's panel may have started it first: names are unique among live terminals.
@@ -1267,20 +1283,22 @@ class ShepherdPanel {
 
   // Exited: the shell starts Hermes again on Enter. Gone or failed: start a new terminal once.
   restart(status, cx) {
-    if (status.kind === "exited") cx.spawn(async () => { try { await hc(["keys", status.term.address, "enter"]); } catch {} });
+    if (status.kind === "exited") cx.spawn(async () => { try { await writeProfile(savedRules().profile); await hc(["keys", status.term.address, "enter"]); } catch {} });
     else { this.phase = null; this.error = ""; }
   }
 
   render(cx) {
     this.ensure(cx);
-    publishControls();
     const t = theme();
     const status = this.status();
     const why = this.why?.line ? `: ${this.why.line}` : "";
+    const profile = savedRules().profile;
+    const using = status.term?.labels?.[RUNNING_PROFILE];
+    const later = using && using !== profile ? ` Settings say \`${profile}\`; it applies at the next start or Restart.` : "";
     const [text, action] = {
-      checking: ["Starting Hermes…"], launching: ["Starting Hermes…"],
-      running: [`Running \`${COORDINATOR_ARGV.join(" ")}\`.`],
-      exited: [`Hermes exited with code ${status.code}${why}.`, "Restart"],
+      checking: [`Starting Hermes (\`${profile}\`)…`], launching: [`Starting Hermes (\`${profile}\`)…`],
+      running: [`Running \`hermes -p ${using ?? profile}\`.${later}`],
+      exited: [`Hermes (\`${using ?? profile}\`) exited with code ${status.code}${why}.${later}`, "Restart"],
       gone: ["The Shepherd terminal is gone.", "Start again"],
       failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
     }[status.kind];

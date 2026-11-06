@@ -7,6 +7,7 @@ Usage:
   hermes-shepherd-board --edit BOARD ID VERSION BODY   replace the task's description
   hermes-shepherd-board --sessions BOARD ID RULES      records the rules find in the task's text
   hermes-shepherd-board --check-rules RULES            problems in the record rules
+  hermes-shepherd-board --check-profile NAME           why NAME is not a Hermes profile name, if it is not
   hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, archive, restore or delete
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
@@ -409,12 +410,25 @@ def act(board, task_id, action, expected):
                 "task": details(conn, task_id) if after else None}
 
 
+def check_profile(name):
+    """The Shepherd panel's profile, checked by Hermes's own rule; nothing is created or read from disk."""
+    from hermes_cli.profiles import validate_profile_name
+    if not name.strip():
+        return {"error": "The Hermes profile is empty."}
+    try:
+        validate_profile_name(name)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"error": None}
+
+
 # Each flag and the number of arguments after it.
 COMMANDS = {
     "--task": (2, task_details),
     "--edit": (4, edit_description),
     "--sessions": (3, sessions),
     "--check-rules": (1, lambda rules: {"errors": compile_rules(json.loads(rules))[1]}),
+    "--check-profile": (1, check_profile),
     "--archived": (1, archived),
     "--act": (4, act),
 }

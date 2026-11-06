@@ -105,6 +105,14 @@ class SessionRecords(unittest.TestCase):
         self.assertEqual([e["rule"] for e in reply["errors"]], [0, 1, 2, 3, 4, 5])
         self.assertIn("group 2", reply["errors"][-1]["error"])
 
+    def test_profile_names_follow_hermes_rules(self):
+        for name in ["coordinator", "default", "work-2", "a_b"]:
+            self.assertEqual(self.helper("--check-profile", name), (0, {"error": None}), name)
+        for name in ["", "  ", "Coordinator", "-p", "a b", "../x", "hermes", "x" * 65]:
+            code, reply = self.helper("--check-profile", name)
+            self.assertEqual(code, 0, name)
+            self.assertTrue(reply["error"], name)
+
     def test_malformed_rule_list_is_rejected(self):
         for rules in ({"rules": []}, [{"regex": "x"}], [rule("x", "y") | {"tab": "yes"}]):
             code, reply = self.helper("--check-rules", json.dumps(rules))

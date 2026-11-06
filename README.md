@@ -43,7 +43,7 @@ Filters are global: every Shepherd tab in every space uses the same Repository a
 
 ### The Shepherd panel
 
-The Shepherd panel is a terminal running your existing Hermes coordinator, `hermes -p coordinator`. It is part of your layout, like the Files and Changes panels, and Shepherd never edits your layout. To get it, clone the layout you use and add this block next to the Files and Changes `panel` column, usually in the row that holds the tab (`work-body` in Herdr's main layout):
+The Shepherd panel is a terminal running your existing Hermes coordinator, `hermes -p coordinator` unless Settings names another profile. It is part of your layout, like the Files and Changes panels, and Shepherd never edits your layout. To get it, clone the layout you use and add this block next to the Files and Changes `panel` column, usually in the row that holds the tab (`work-body` in Herdr's main layout):
 
 ```json
 { "id": "shepherd", "type": "column", "hidden": true, "size": { "px": 460 }, "min": 280, "max": 1100,
@@ -57,13 +57,21 @@ The Shepherd panel is a terminal running your existing Hermes coordinator, `herm
 herdr-app do layout.clone '{"name":"main","as":"my-layout"}'
 ```
 
-Keep the ids `shepherd` and `shepherd-terminal` and the terminal name `hermes-shepherd`; the controls find the panel by them. Change the width, the limits or the place freely.
+Keep the ids `shepherd` and `shepherd-terminal` and the terminal name `hermes-shepherd`; the panel's header finds its terminal and hides the panel by them. Change the width, the limits or the place freely.
 
-The Shepherd button at the top right of a Shepherd tab shows and hides the panel, as Files and Changes show and hide theirs. The panel's own Hide button works from any tab. The layout remembers the panel's width when you drag its edge, and whether it is shown, across restarts. If the shown layout has no `shepherd` block, the Shepherd button says so instead.
+Showing and hiding the panel belongs to your layout, as it does for Files and Changes; Shepherd works the same whether or not your layout has the panel. Once shown, the panel stays beside every tab in every space, so you can talk to the coordinator from anywhere. The panel's own Hide button hides it, and `herdr-app do layout.toggle --id shepherd` shows or hides it. To toggle it with a key from any tab, also while a terminal has focus, add a binding to the `global` section of Herdr App's `keys.json`:
+
+```json
+"ctrl-shift-y": "layout.toggle:shepherd"
+```
+
+Pick any free key; a binding in the `terminal` section would win over it while a terminal has focus. The layout remembers the panel's width when you drag its edge, and whether it is shown, across restarts.
 
 When the panel shows and Herdr Core has no terminal named `hermes-shepherd`, Shepherd starts one in your home folder, for example the first time or after a reboot. It runs the `hermes` on Core's PATH inside a small `sh` loop, so your own wrapper, jail and approval settings apply. Shepherd creates no profile and changes no Hermes settings. There is one terminal for every space and tab, and hiding the panel, switching tabs or spaces, and restarting the App leave it running.
 
-When Hermes exits, the terminal stays open: it prints the exit code, and the panel's header shows the code and Hermes's last line with a Restart button. Restart, or Enter in the terminal, starts Hermes again in the same terminal. Shepherd never restarts it on its own. Without a `coordinator` profile, Hermes exits with `Profile 'coordinator' does not exist`.
+When Hermes exits, the terminal stays open: it prints the exit code, and the panel's header shows the code and Hermes's last line with a Restart button. Restart, or Enter in the terminal, starts Hermes again in the same terminal. Shepherd never restarts it on its own. Without the profile, Hermes exits with `Profile 'coordinator' does not exist`.
+
+The Hermes profile field in Settings sets the profile the panel opens; it is `coordinator` until you save another. Save checks it with Hermes's own profile-name rule and creates no profile. Shepherd passes it to `hermes` as the argument after `-p`, never through a shell. A saved change applies the next time Hermes starts, by Restart, Enter in the terminal or a new terminal. A running conversation is never stopped for it: while it runs with the old profile, the header names both.
 
 Herdr App deletes a layout's terminal block when that terminal ends, and rewrites the rest of the layout file around it; in Herdr App 0.1.11 it also merged the Files and Changes column into its parent. That is why the terminal outlives Hermes. If something ends the terminal anyway, such as `hc kill hermes-shepherd`, Shepherd removes its finished record, and the header says the terminal is gone. Press Start again, then put your layout file back as it was (keep a copy of it). The App may keep a size it saved for the rewritten layout, so the header can come back taller; drag its lower edge back.
 
@@ -73,7 +81,7 @@ The Cron jobs button at the top right lists the cron jobs of every Hermes profil
 
 ### Records and rules
 
-The Settings button at the top right edits an ordered list of rules and the name of the records tab, shared by every Shepherd tab in every space. The records tab is called Links until you name it otherwise; the name cannot be empty. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks every rule first and saves nothing while one has a problem. Esc, Close or ✕ with unsaved changes asks before discarding them.
+The Settings button at the top right edits the panel's Hermes profile, an ordered list of rules and the name of the records tab, all shared by every Shepherd tab in every space. The records tab is called Links until you name it otherwise; the name cannot be empty. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks the profile and every rule first and saves nothing while one has a problem. Esc, Close or ✕ with unsaved changes asks before discarding them.
 
 - The regex is a Python regular expression. In the command and the description, `$1`, `$2` and so on insert capture groups, `$0` the whole match, and `$$` a dollar sign.
 - The command is split into arguments the way a shell would, with quotes and backslashes, before the captures go in. A capture is always literal text inside one argument, whatever quotes, spaces or `$(…)` it holds.
@@ -92,8 +100,8 @@ Matching runs in the background, in a separate process, so the dialog stays usab
 
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
 - A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). The board and cron list need no Hermes gateway, profile, or plugin.
-- For the Shepherd panel: `hermes`, `hc` and `sh` on the PATH Herdr Core runs with, a Hermes profile named `coordinator`, and the panel's block in your layout.
-- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Shepherd, Cron jobs, Settings and Show archived buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel's own Hide button and `herdr-app do layout.toggle --id shepherd` still work, but there is no way to list cron jobs, edit record rules, or list, restore or delete archived tasks.
+- For the Shepherd panel: `hermes`, `hc` and `sh` on the PATH Herdr Core runs with, the Hermes profile Settings names (`coordinator` by default), and the panel's block in your layout.
+- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Cron jobs, Settings and Show archived buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel works as usual, but there is no way to list cron jobs, edit record rules, or list, restore or delete archived tasks.
 
 Record commands and the Shepherd terminal run through Herdr Core, like any terminal you open yourself. Shepherd adds no sandbox. Any jail or approval comes from your own wrappers on the PATH Herdr Core runs with, such as a `hermes` wrapper or the programs your rules name.
 
