@@ -1,15 +1,16 @@
 // Hermes Shepherd: a view of a Hermes kanban board, opened as a tab.
 // The board is the one named like the tab (slug or display name); otherwise Hermes's
 // default board, and the toolbar says so. Repository and spec filters are global.
+// In a layout block with props { panel } it is the Shepherd panel's header (ShepherdPanel).
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
 // it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
 // with props { settings } it is the Settings dialog for the record rules and the records tab name (SessionSettings).
 // With props { actions }, { confirm } or { archived } it is a card's action menu, the confirmation of an archive,
 // restore or delete, or the archived-task list (ActionMenu, Confirm, Archived).
 
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
+import { spaces, panes, terminals, layout, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
 
 const MOD = "hermes-shepherd";
 // Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
@@ -51,17 +52,29 @@ const describe = (filter) => filter == null ? "All" : filter === "" ? "None" : s
 const count = (cols) => cols.reduce((n, c) => n + c.tasks.length, 0);
 const activeTab = () => spaces().find((s) => s.active)?.tabs.find((t) => t.active)?.id ?? null;
 
-// One coordinator serves every Shepherd tab in every space: the user's own `hermes -p coordinator`,
-// started once in Core through the `hermes` on PATH, so the user's wrapper and jail apply.
-// Each Shepherd tab shows it in a right split running `hc attach`; closing or hiding that split
-// never ends the coordinator, and an exited coordinator is restarted only by the person.
-const COORDINATOR = "hermes-shepherd.coordinator"; // shared: { address, error, hidden }
-const COORDINATOR_NAME = "hermes-coordinator";
+// The Shepherd panel is a block the person adds to their own layout (README: The Shepherd panel):
+// a header (this mod with props { panel }) above a `{ "terminal": PANEL_TERMINAL }` block.
+// That one terminal runs the user's own `hermes -p coordinator` through the `hermes` on Core's PATH,
+// so their wrapper and jail apply. It serves every space and is restarted only by the person.
+// Herdr App deletes a layout's terminal block, and rewrites the layout around it, when the terminal
+// ends, so a shell keeps the terminal alive after Hermes exits: it records the exit code as a label
+// and starts Hermes again only on Enter or the panel's Restart.
+const PANEL = "shepherd"; // layout node ids the README's snippet uses
+const PANEL_BLOCK = "shepherd-terminal";
+const PANEL_TERMINAL = "hermes-shepherd";
 const COORDINATOR_ARGV = ["hermes", "-p", "coordinator"];
-const ATTACH = "hermes-shepherd.attach"; // label on a tab's attach terminal: the coordinator it shows
-const coordinator = () => shared(COORDINATOR) ?? {};
-// Controls show the coordinator's visibility, so publish them with every change to it.
-const setCoordinator = (patch) => { setShared(COORDINATOR, { ...coordinator(), ...patch }); publishControls(); };
+const EXIT = "hermes-shepherd.exit"; // label: Hermes's last exit code, absent while it runs
+const RUNNER = `trap : INT QUIT
+while :; do
+  hc label "$HC_TERMINAL_ID" ${EXIT}= >/dev/null 2>&1
+  "$@"; code=$?
+  # Drop keys typed while Hermes ran, so only a new Enter starts it again; the label then offers Restart.
+  while read -r -t 1 _ 2>/dev/null; do :; done
+  hc label "$HC_TERMINAL_ID" ${EXIT}=$code >/dev/null 2>&1
+  printf '\\n[Hermes exited with code %s. Press Enter, or Restart in the Shepherd panel, to start it again.]\\n' "$code"
+  until read -r _; do sleep 1; done
+done`;
+const findNode = (node, id) => node?.id === id ? node : (node?.children ?? []).reduce((hit, c) => hit ?? findNode(c, id), null);
 // `hc --json` prints its reply on stdout, or `{ error: { message, hint } }` on stderr.
 const hcReply = (result) => { for (const text of [result.stdout, result.stderr]) { try { return JSON.parse(text); } catch {} } return null; };
 const hcError = (result, reply) => reply?.error?.message ?? (result.stderr.trim() || `hc exited with code ${result.code}`);
@@ -70,10 +83,13 @@ const stamp = (iso) => { const d = iso && new Date(iso); return d && !isNaN(d) ?
 
 // Top-right tab-bar controls, published as herdr-navigation's `tab-controls:hermes-shepherd`.
 // Add a control with one entry: Smart Tabs runs `hermes-shepherd.<id>`, which reaches `run` in the shown copy.
-// Published from init and whenever the coordinator state changes, not on every render.
+// Published when the board renders; an unchanged list is not written again.
 const CONTROLS = [
-  { id: "coordinator", label: "Coordinator", icon: `mods/${MOD}/coordinator.svg`,
-    active: () => !coordinator().hidden, run: () => setCoordinator({ hidden: !coordinator().hidden }) },
+  // Like Files and Changes, the control only shows and hides the panel; the layout keeps its width.
+  { id: "shepherd", label: "Shepherd", icon: `mods/${MOD}/coordinator.svg`,
+    active: () => { const panel = findNode(layout(), PANEL); return Boolean(panel && !panel.hidden); },
+    run: () => findNode(layout(), PANEL) ? run("layout.toggle", { id: PANEL })
+      : notify({ title: "Shepherd is not in this layout", level: "warning", body: "Add the README's layout snippet." }) },
   { id: "cron", label: "Cron jobs", icon: `mods/${MOD}/cron.svg`,
     run: () => openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560, props: { cron: true } }) },
   { id: "settings", label: "Settings", icon: `mods/${MOD}/settings.svg`,
@@ -95,6 +111,7 @@ export default class Shepherd extends View {
   init(_props, cx) {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
+    if (props()?.panel) { this.details = new ShepherdPanel(); this.details.init(cx); return; }
     const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived : null;
     if (Overlay) { this.details = new Overlay(); this.details.init(cx); return; }
     this.handle = cx.focus_handle();
@@ -103,131 +120,10 @@ export default class Shepherd extends View {
     this.data = null; this.error = ""; this.loading = false; this.queued = false; this.updated = null;
     this.sel = null; this.tab = null; this.requested = undefined; this.watches = 0;
     cx.timer.every(POLL_MS, (cx) => { if (this.requested !== undefined) this.refresh(cx); });
-    this.busy = false; this.attaching = null; this.zoomedFor = undefined; this.tail = null;
     publishControls();
     cx.spawn(async (cx) => {
       for (;;) { const id = await nextCommand(); CONTROLS.find((c) => c.id === id)?.run(this, cx); cx.notify(); }
     });
-  }
-
-  // The coordinator as Core sees it: none yet, live, ended (exited or gone), unknown, or failed to start.
-  // terminals() lists live terminals only, and a new one shows up a little after `hc run` returns,
-  // so an unlisted coordinator is asked about with `hc get` (readEnd) before it counts as ended.
-  coordinatorStatus() {
-    const { address, error } = coordinator();
-    if (error) return { kind: "failed" };
-    if (!address) return { kind: "none" };
-    if (terminals().some((t) => t.address === address && t.state === "live")) return { kind: "live" };
-    const end = this.tail?.address === address ? this.tail : null;
-    return { kind: end?.gone || (end?.term && end.term.state !== "live") ? "ended" : "unknown" };
-  }
-
-  // Runs in the shown copy on every render; each step is idempotent and does nothing while one is in flight.
-  ensureCoordinator(cx) {
-    if (!this.tab || this.tab !== activeTab() || this.busy) return;
-    const { address, hidden } = coordinator();
-    const status = this.coordinatorStatus();
-    if (status.kind === "none") { if (!hidden) this.launchCoordinator(cx); return; }
-    if (status.kind === "unknown" && this.tail?.address !== address) this.readEnd(address, cx);
-    if (status.kind !== "live") return;
-    const live = terminals().filter((t) => t.state === "live");
-    const attach = live.find((t) => t.labels?.[ATTACH] === address && t.labels?.["herdr.tab"] === this.tab);
-    // An attach just started may not be listed yet; give it a few seconds before starting another.
-    // Attach terminals run with --rm, so an ended one is never listed again.
-    const pending = this.attaching && Date.now() - this.attaching.at < 5000 && !terminals().some((t) => t.address === this.attaching.address);
-    // A failed attach waits for the person (the banner's button) instead of retrying on every render.
-    if (!attach && !pending && !hidden && !this.attachError) this.attachCoordinator(address, cx);
-    // Hiding zooms the board pane, so the split and its width stay for the next show. Applied once per change.
-    const pane = panes().find((p) => p.mod === MOD && p.tab === this.tab);
-    if (attach && pane && this.zoomedFor !== Boolean(hidden)) {
-      this.zoomedFor = Boolean(hidden);
-      if (pane.zoomed !== Boolean(hidden)) run("pane.zoom", { pane: pane.pane });
-    }
-  }
-
-  launchCoordinator(cx) {
-    this.busy = true;
-    cx.spawn(async (cx) => {
-      // A live terminal with the coordinator's name is ours already (e.g. after shared state was lost).
-      const adopt = () => terminals().find((t) => t.state === "live" && t.name === COORDINATOR_NAME);
-      try {
-        if (adopt()) { setCoordinator({ address: adopt().address, error: null }); return; }
-        let result;
-        try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", COORDINATOR_NAME, "--cwd", home(), "--", ...COORDINATOR_ARGV]); }
-        catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
-        const reply = hcReply(result);
-        if (result.code === 0 && reply?.address) { setCoordinator({ address: reply.address, error: null }); return; }
-        if (adopt()) { setCoordinator({ address: adopt().address, error: null }); return; }
-        throw new Error(hcError(result, reply));
-      } catch (e) {
-        setCoordinator({ address: null, error: e?.message ?? String(e) });
-      } finally { this.busy = false; cx.notify(); }
-    });
-  }
-
-  attachCoordinator(address, cx) {
-    const space = spaces().find((s) => s.tabs.some((t) => t.id === this.tab));
-    if (!space) return;
-    if (space.machine) { this.attachError = "The coordinator runs on this computer, so a Shepherd tab in a space on another machine cannot show it."; return; }
-    this.busy = true;
-    cx.spawn(async (cx) => {
-      try {
-        const result = await hc(["run", "--bg", "--json", "--no-parent", "--rm", "--label", `herdr.space=${space.id}`,
-          "--label", `herdr.tab=${this.tab}`, "--label", `${ATTACH}=${address}`, "--", "hc", "attach", address]);
-        const reply = hcReply(result);
-        this.attaching = reply?.address ? { address: reply.address, at: Date.now() } : null;
-        this.attachError = result.code === 0 ? "" : hcError(result, reply);
-      } catch (e) {
-        this.attachError = e?.message ?? String(e);
-      } finally { this.busy = false; this.zoomedFor = undefined; cx.notify(); }
-    });
-  }
-
-  // How an unlisted coordinator finished, and the last lines it printed, which usually say why (e.g. a missing profile).
-  // Still live (not listed yet): ask again in a second rather than call it ended.
-  readEnd(address, cx) {
-    const tail = this.tail = { address, text: "", term: null, gone: false };
-    cx.spawn(async (cx) => {
-      try {
-        const got = await hc(["get", address, "--json"]);
-        if (got.code !== 0) tail.gone = true;
-        else tail.term = JSON.parse(got.stdout);
-        if (tail.term?.state === "live") {
-          cx.timer.after(1000, (cx) => { if (this.tail === tail) { this.tail = null; cx.notify(); } });
-          return;
-        }
-        const read = await hc(["read", address, "--lines", "8"]);
-        if (read.code === 0) tail.text = read.stdout.trimEnd();
-      } catch { tail.gone = true; }
-      cx.notify();
-    });
-  }
-
-  // A deliberate restart: remove the ended terminal's record (`hc rm` refuses a live one), then launch again.
-  restartCoordinator(cx) {
-    const { address } = coordinator();
-    if (address) cx.spawn(async () => { try { await hc(["rm", address]); } catch {} });
-    this.tail = null; this.attachError = "";
-    setCoordinator({ address: null, error: null, hidden: false });
-  }
-
-  coordinatorBanner(t) {
-    const status = this.coordinatorStatus();
-    const { error } = coordinator();
-    if (status.kind !== "failed" && status.kind !== "ended" && !this.attachError) return null;
-    const term = this.tail?.term;
-    const title = status.kind === "failed" ? "Cannot start the Hermes coordinator."
-      : status.kind === "ended" ? (term ? `The Hermes coordinator ${term.reason ?? "ended"}${term.exit_code != null ? ` with code ${term.exit_code}` : term.signal ? ` on signal ${term.signal}` : ""}.`
-        : `The Hermes coordinator terminal ${coordinator().address} is gone; Core no longer has it.`)
-      : "Cannot show the Hermes coordinator in this tab.";
-    const detail = status.kind === "failed" ? error : status.kind === "ended" ? this.tail?.text : this.attachError;
-    return v_flex().flex_none().mx(12).mt(10).p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
-      .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child(title))
-      .when(Boolean(detail), (el) => el.child(div().text_size(12).text_color(t.foreground).child(detail)))
-      .child(div().text_size(12).text_color(t.muted).child(`Shepherd runs \`${COORDINATOR_ARGV.join(" ")}\` and does not restart it on its own.`))
-      .child(h_flex().id("coordinator-restart").mt(4).h(24).px(9).flex_none().self_start().items_center().rounded(6).bg(t.solid)
-        .text_size(12).text_color(t.solid_foreground).hover((s) => s.opacity(0.85))
-        .on_click((_e, cx) => this.restartCoordinator(cx)).child(status.kind === "ended" ? "Restart coordinator" : "Try again"));
   }
 
   loadCron(cx) {
@@ -395,7 +291,7 @@ export default class Shepherd extends View {
     if (props()?.menu) return this.renderMenu(props().menu);
     if (props()?.cron) return this.renderCron();
     if (this.requested !== undefined) this.sync(cx);
-    this.ensureCoordinator(cx);
+    publishControls();
     const t = theme();
     const filters = shared(FILTERS) ?? {};
     const cols = this.columns();
@@ -419,7 +315,6 @@ export default class Shepherd extends View {
       .child(div().flex_none().text_size(11.5).text_color(t.dim).child(status))
       .child(h_flex().id("shepherd-refresh").h(26).px(9).flex_none().items_center().rounded(6).text_size(12).text_color(t.muted)
         .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.refresh(cx)).child("Refresh"));
-    const coordinatorBanner = this.coordinatorBanner(t);
     const banner = this.error && v_flex().flex_none().mx(12).mt(10).p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
       .child(div().text_size(12.5).font_semibold().text_color(t.blocked)
         .child(this.data ? "Cannot refresh the Hermes board. Showing the last successful read." : "Cannot read the Hermes board."))
@@ -477,7 +372,6 @@ export default class Shepherd extends View {
       })
       .child(toolbar)
       .when(Boolean(banner), (el) => el.child(banner))
-      .when(Boolean(coordinatorBanner), (el) => el.child(coordinatorBanner))
       // overflow_x_scroll, unlike overflow_x_scrollbar, also turns a vertical wheel into sideways scrolling.
       // The bar shows only while the columns overflow; it would show a full-width thumb otherwise.
       .when(Boolean(this.data), (el) => el.child(div().flex_1().min_h(0).relative()
@@ -1291,5 +1185,115 @@ class Archived {
         .when(Boolean(this.error), (el) => el.child(errorBox(t, `Cannot read archived tasks. ${this.error}`)))
         .when(Boolean(this.tasks && !this.tasks.length), (el) => el.child(div().text_size(12.5).text_color(t.muted).child("No archived tasks on this board.")))
         .children(tasks.map(row)));
+  }
+}
+
+// The Shepherd panel's header (props { panel }): starts the panel terminal when the panel shows and none exists,
+// says whether Hermes runs or how it ended, and offers the deliberate restart. Nothing restarts on its own.
+// The terminal is found by its name, never by a stored address: Core reuses addresses after a restart.
+class ShepherdPanel {
+  // phase: null (follow the live terminal), "checking", "launching", "gone" (ended; waits for Start again) or "failed".
+  init(_cx) { this.phase = null; this.error = ""; this.why = null; this.reshow = false; }
+
+  live() { return terminals().find((t) => t.state === "live" && t.name === PANEL_TERMINAL); }
+
+  status() {
+    const term = this.live();
+    if (term) {
+      const code = term.labels?.[EXIT];
+      return code ? { kind: "exited", code, term } : { kind: "running", term };
+    }
+    return { kind: this.phase ?? "checking" };
+  }
+
+  ensure(cx) {
+    const status = this.status();
+    if (status.term) {
+      this.phase = null;
+      // The terminal block looks its terminal up by name when it shows, so show it again once Core lists the new one.
+      if (this.reshow && findNode(layout(), PANEL_BLOCK)) { run("layout.hide", { id: PANEL_BLOCK }); run("layout.show", { id: PANEL_BLOCK }); }
+      this.reshow = false;
+      if (status.kind === "exited" && this.why?.key !== `${status.term.address}:${status.code}`) this.readWhy(status.term.address, status.code, cx);
+    } else if (this.phase === null) this.check(cx);
+  }
+
+  // terminals() lists live terminals only, and a new one shows up a little after `hc run` returns, so Core is asked.
+  // No terminal: start one. A finished one is removed at once and waits for Start again: a terminal block finds
+  // finished terminals by name too, and Herdr App deletes a block that shows one.
+  check(cx) {
+    this.phase = "checking";
+    cx.spawn(async (cx) => {
+      let got = null;
+      try { got = await hc(["get", PANEL_TERMINAL, "--json"]); } catch {}
+      const term = got?.code === 0 ? hcReply(got) : null;
+      if (term?.state === "live") cx.timer.after(1000, (cx) => { if (this.phase === "checking") this.phase = null; cx.notify(); });
+      else if (term) { try { await hc(["rm", term.address]); } catch {} this.phase = "gone"; }
+      else this.launch(cx);
+      cx.notify();
+    });
+  }
+
+  launch(cx) {
+    this.phase = "launching";
+    cx.spawn(async (cx) => {
+      try {
+        let result;
+        try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", PANEL_TERMINAL, "--cwd", home(),
+          "--", "sh", "-c", RUNNER, PANEL_TERMINAL, ...COORDINATOR_ARGV]); }
+        catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
+        if (result.code !== 0) {
+          // Another screen's panel may have started it first: names are unique among live terminals.
+          const got = await hc(["get", PANEL_TERMINAL, "--json"]);
+          if (!(got.code === 0 && hcReply(got)?.state === "live")) throw new Error(hcError(result, hcReply(result)));
+        }
+        this.phase = null; this.reshow = true;
+      } catch (e) { this.phase = "failed"; this.error = e?.message ?? String(e); }
+      cx.notify();
+    });
+  }
+
+  // The last line Hermes printed before it exited usually says why, e.g. a missing profile or `hermes: command not found`.
+  readWhy(address, code, cx) {
+    const why = this.why = { key: `${address}:${code}`, line: "" };
+    cx.spawn(async (cx) => {
+      try {
+        const read = await hc(["read", address, "--lines", "12"]);
+        const lines = read.code === 0 ? read.stdout.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("[Hermes exited")) : [];
+        why.line = lines.pop() ?? "";
+      } catch {}
+      cx.notify();
+    });
+  }
+
+  // Exited: the shell starts Hermes again on Enter. Gone or failed: start a new terminal once.
+  restart(status, cx) {
+    if (status.kind === "exited") cx.spawn(async () => { try { await hc(["keys", status.term.address, "enter"]); } catch {} });
+    else { this.phase = null; this.error = ""; }
+  }
+
+  render(cx) {
+    this.ensure(cx);
+    publishControls();
+    const t = theme();
+    const status = this.status();
+    const why = this.why?.line ? `: ${this.why.line}` : "";
+    const [text, action] = {
+      checking: ["Starting Hermes…"], launching: ["Starting Hermes…"],
+      running: [`Running \`${COORDINATOR_ARGV.join(" ")}\`.`],
+      exited: [`Hermes exited with code ${status.code}${why}.`, "Restart"],
+      gone: ["The Shepherd terminal is gone.", "Start again"],
+      failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
+    }[status.kind];
+    const button = (id, label, onClick, solid) => h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).text_size(12)
+      .bg(solid ? t.solid : t.chrome).text_color(solid ? t.solid_foreground : t.muted)
+      .hover((s) => solid ? s.opacity(0.85) : s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { onClick(cx); cx.notify(); }).child(label);
+    return h_flex().id("shepherd-panel").size_full().px(10).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .child(svg(`mods/${MOD}/coordinator.svg`).size(14).flex_none().text_color(t.muted))
+      .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child("Shepherd"))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(action ? t.blocked : t.dim)
+        .child(findNode(layout(), PANEL_BLOCK) ? text : `${text} Add the "${PANEL_BLOCK}" block back to your layout (see the README).`))
+      .when(Boolean(action), (el) => el.child(button("shepherd-restart", action, (cx) => this.restart(status, cx), true)))
+      .child(button("shepherd-hide", "Hide", () => run("layout.hide", { id: PANEL }), false));
   }
 }
