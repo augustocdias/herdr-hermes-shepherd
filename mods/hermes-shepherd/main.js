@@ -8,7 +8,7 @@
 // With props { actions }, { confirm } or { archived } it is a card's action menu, the confirmation of an archive,
 // restore or delete, or the archived-task list (ActionMenu, Confirm, Archived).
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, terminals, layout, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
 
@@ -20,10 +20,23 @@ const ICONS = {
   icon: SVG('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/>'),
   coordinator: SVG('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>'),
   cron: SVG('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
-  settings: SVG('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
-  archive: SVG('<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/>'),
+  settings: SVG('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>'),
+  archive: SVG('<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>'),
+  // Glyphs inside Shepherd's own views.
+  close: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
+  chevron: SVG('<path d="m6 9 6 6 6-6"/>'),
+  refresh: SVG('<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>'),
+  restore: SVG('<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>'),
+  plus: SVG('<path d="M12 5v14M5 12h14"/>'),
+  more: SVG('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),
 };
-(async () => {
+// The Hermes Shepherd picture (design/assets, cut out and shrunk to 48 px) wrapped in an SVG, so it is written like
+// the icons; image() draws it in full color, where svg() would draw a one-color disc.
+ICONS.logo = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 48 48"><image width="48" height="48" xlink:href="data:image/png;base64,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"/></svg>\n`;
+// Herdr App remembers an image it could not find until it restarts, so nothing draws these files before
+// assetsReady: on a first install they are written after the first render.
+let assetsReady = false;
+const ASSETS_READY = (async () => {
   for (const [name, text] of Object.entries(ICONS)) {
     const path = `${appHome()}/mods/${MOD}/${name}.svg`;
     try {
@@ -34,15 +47,53 @@ const ICONS = {
       if (current !== text) await writeTextFile(path, text, current);
     } catch (e) { console.log(`hermes-shepherd: cannot write ${path}: ${e}`); }
   }
+  assetsReady = true;
 })();
+// Called first in every view's render: re-renders the view once the files exist.
+const awaitAssets = (owner, cx) => {
+  if (!assetsReady && !owner.assetWait) owner.assetWait = cx.spawn(async (cx) => { await ASSETS_READY; cx.notify(); });
+};
+const logo = (size) => assetsReady ? image(`mods/${MOD}/logo.svg`).size(size).flex_none() : div().size(size).flex_none();
+// Shared look. Colors are theme() names, so other themes work; the layout follows the design mockup.
+const MONO = "Geist Mono"; // ships with Herdr App
+// A #rrggbb theme color at alpha `a` (two hex digits); any other color stays as it is.
+const tint = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
+const glyph = (name, size = 14) => assetsReady ? svg(`mods/${MOD}/${name}.svg`).size(size).flex_none() : div().size(size).flex_none();
+// kind: "primary" (accent), "danger", or null (outlined).
+const button = (t, id, text, kind, onClick, icon) => h_flex().id(id).h(30).px(12).gap(6).flex_none().items_center().rounded(6)
+  .text_size(12).cursor_pointer().border_1()
+  .border_color(kind === "primary" ? t.accent : kind === "danger" ? t.blocked : t.input)
+  .when(kind === "primary", (el) => el.bg(t.accent).font_semibold())
+  .text_color(kind === "primary" ? t.accent_foreground : kind === "danger" ? t.blocked : t.foreground)
+  .hover((s) => kind === "primary" ? s.opacity(0.88) : s.bg(t.hover))
+  .on_click(onClick).when(Boolean(icon), (el) => el.child(glyph(icon, 13))).child(text);
+const iconButton = (t, id, name, label, onClick) => h_flex().id(id).size(28).flex_none().items_center().justify_center().rounded(6)
+  .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(label).on_click(onClick).child(glyph(name, 15));
+// A dialog's title bar: its content, the Esc hint and a close button.
+const titleBar = (t, id, content, onClose) => h_flex().flex_none().h(40).pl(14).pr(8).gap(8).items_center()
+  .bg(t.chrome).border_b(1).border_color(t.border).children(content).child(div().flex_1())
+  .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
+  .child(iconButton(t, `${id}-close`, "close", "Close", onClose));
+const heading = (t, text) => div().text_size(11).font_semibold().text_color(t.muted).child(text.toUpperCase());
+const dot = (t, status, size = 8) => div().size(size).flex_none().rounded(size).bg(t[MARKER[status]] ?? t.unknown);
+// A status: its dot and its name on a raised chip, so it never depends on color alone.
+const statusChip = (t, key) => h_flex().flex_none().gap(6).items_center().px(8).py(2).rounded(6).bg(t.raised)
+  .text_size(12).font_medium().text_color(t.foreground).child(dot(t, key, 7)).child(status(key));
+const chip = (t, text) => div().flex_none().max_w(160).truncate().px(6).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(text);
+// A profile's first two letters on a tinted square; Unassigned is an empty dashed circle.
+const avatar = (t, name, size = 20) => name
+  ? h_flex().size(size).flex_none().items_center().justify_center().rounded(6).bg(tint(t.accent, "29"))
+    .font_family(MONO).text_size(size > 22 ? 11 : 9.5).font_medium().text_color(t.accent).child(name.slice(0, 2))
+  : div().size(size).flex_none().rounded(size).border_1().border_dashed().border_color(t.input);
 const HELPER = "hermes-shepherd-board";
 const FILTERS = "hermes-shepherd.filters";
-const CARD = 248;
-const COLUMN = CARD + 16, COLUMN_GAP = 10, BOARD_PAD = 12; // the board's layout, also used to tell when it overflows
+// The board's layout, also used to tell when it overflows: columns share the width but stay at least COLUMN wide.
+const COLUMN = 236, COLUMN_GAP = 10, BOARD_PAD = 16;
 const POLL_MS = 30000;
 // Hermes stores `scheduled`; Shepherd shows it as Parked. Nothing else is renamed.
 const DISPLAY = { scheduled: "Parked" };
-const MARKER = { triage: "ansi5", todo: "idle", scheduled: "unknown", ready: "ansi4", running: "working", blocked: "blocked", review: "ansi6", done: "ansi2" };
+// Theme colors nearest the mockup's: Triage mauve, Todo grey, Parked lavender, Ready sky, Running blue, Review peach.
+const MARKER = { triage: "ansi5", todo: "idle", scheduled: "ansi7", ready: "ansi6", running: "ansi4", blocked: "blocked", review: "ansi3", done: "ansi2" };
 
 const label = (column) => DISPLAY[column.key] ?? column.label;
 const short = (path) => path.split("/").filter(Boolean).pop() || path;
@@ -105,7 +156,7 @@ const CONTROLS = [
   { id: "settings", label: "Settings", icon: `mods/${MOD}/settings.svg`,
     run: () => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 860, height: 0.85, props: { settings: true } }) },
   { id: "archived", label: "Show archived", icon: `mods/${MOD}/archive.svg`,
-    run: (view) => view.data ? openOverlay({ mod: MOD, kind: "dialog", width: 640, height: 560,
+    run: (view) => view.data ? openOverlay({ mod: MOD, kind: "dialog", width: 680, height: 620,
       props: { archived: { board: view.data.board, name: view.data.board_name, db: view.data.db } } })
       // The toast shows one line, so the board's banner carries the error itself.
       : notify({ title: "Cannot show archived tasks", level: "error",
@@ -132,7 +183,8 @@ export default class Shepherd extends View {
     this.data = null; this.error = ""; this.loading = false; this.queued = false; this.updated = null;
     this.sel = null; this.tab = null; this.requested = undefined; this.watches = 0;
     cx.timer.every(POLL_MS, (cx) => { if (this.requested !== undefined) this.refresh(cx); });
-    publishControls();
+    // The tab bar draws the controls' icons, so publish them once the icon files exist.
+    cx.spawn(async () => { await ASSETS_READY; publishControls(); });
     cx.spawn(async (cx) => {
       for (;;) { const id = await nextCommand(); CONTROLS.find((c) => c.id === id)?.run(this, cx); cx.notify(); }
     });
@@ -156,37 +208,33 @@ export default class Shepherd extends View {
 
   renderCron() {
     const t = theme();
-    const button = (id, text, action) => h_flex().id(id).h(26).px(9).flex_none().items_center().rounded(6).text_size(12)
-      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(text);
     const jobs = this.jobs?.jobs ?? [];
     const job = (j) => {
       const failed = j.last_status && !["ok", "delivery_queued"].includes(j.last_status);
       const state = j.running ? "running" : j.state ?? (j.enabled ? "scheduled" : "paused");
       const repeat = j.repeat_times ? ` · run ${j.repeat_completed ?? 0} of ${j.repeat_times}` : "";
-      return v_flex().id(`job-${j.profile}-${j.id}`).flex_none().p(10).gap(4).rounded(8).border(1).border_color(t.border).bg(t.background)
+      return v_flex().id(`job-${j.profile}-${j.id}`).flex_none().p(14).gap(4).rounded(8).border(1).border_color(t.border).bg(t.background)
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(j.name || j.id))
-          .child(div().flex_none().px(6).rounded(5).bg(t.surface).text_size(11.5).text_color(state === "scheduled" || state === "running" ? t.foreground : t.muted).child(state)))
-        .child(div().text_size(12).text_color(t.muted).child(`${j.schedule_display ?? "?"}${repeat} · profile ${j.profile}`))
+          .child(div().flex_none().px(8).py(1).rounded(6).bg(t.raised).text_size(11.5).font_medium().text_color(state === "scheduled" || state === "running" ? t.foreground : t.muted).child(state)))
+        .child(div().font_family(MONO).text_size(12).text_color(t.muted).child(`${j.schedule_display ?? "?"}${repeat} · profile ${j.profile}`))
         .child(div().text_size(12).text_color(t.muted).child(`Next run: ${state === "paused" || state === "completed" ? "—" : stamp(j.next_run_at)}`))
         .child(div().text_size(12).text_color(t.muted).child(`Last run: ${j.last_run_at ? `${stamp(j.last_run_at)} · ${j.last_status ?? "unknown"}` : "never"}`))
         .when(Boolean(failed && (j.last_error || j.last_delivery_error)), (el) => el.child(div().text_size(12).text_color(t.blocked)
           .child(String(j.last_error || j.last_delivery_error).split("\n")[0])));
     };
-    return v_flex().id("shepherd-cron").track_focus(this.handle).size_full().bg(t.popover)
+    return v_flex().id("shepherd-cron").track_focus(this.handle).size_full().bg(t.canvas)
       .on_key_down((e, cx) => { if (e.key === "escape") closeOverlay(props().overlay); else if (e.key === "f5") this.loadCron(cx); else return; cx.stop_propagation(); })
-      .child(h_flex().flex_none().px(14).py(10).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Cron jobs"))
-          .child(div().text_size(11.5).text_color(t.dim).child("Read-only. Hermes runs these on their schedules; change them with `hermes cron`. Parked cards are not cron jobs.")))
-        .child(button("cron-refresh", this.loading ? "Loading…" : "Refresh", (_e, cx) => this.loadCron(cx)))
-        .child(button("cron-close", "Close", () => closeOverlay(props().overlay))))
-      .child(v_flex().id("cron-list").flex_1().min_h(0).p(12).gap(8).overflow_y_scrollbar()
-        .when(Boolean(this.error), (el) => el.child(v_flex().p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+      .child(titleBar(t, "cron", [div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Cron jobs")], () => closeOverlay(props().overlay)))
+      .child(h_flex().flex_none().px(16).py(10).gap(10).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().min_w(0).text_size(12).text_color(t.muted).child("Read-only. Hermes runs these on their schedules; change them with `hermes cron`. Parked cards are not cron jobs."))
+        .child(button(t, "cron-refresh", this.loading ? "Loading…" : "Refresh", null, (_e, cx) => this.loadCron(cx), "refresh")))
+      .child(v_flex().id("cron-list").flex_1().min_h(0).p(16).gap(8).overflow_y_scrollbar()
+        .when(Boolean(this.error), (el) => el.child(v_flex().p(10).gap(4).rounded(8).border(1).border_color(t.blocked).bg(tint(t.blocked, "14"))
           .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child("Cannot read Hermes cron jobs."))
           .child(div().text_size(12).text_color(t.foreground).child(this.error))))
         .children((this.jobs?.errors ?? []).map((e) => div().text_size(12).text_color(t.blocked).child(`Profile ${e.profile}: ${e.error}`)))
-        .when(Boolean(this.jobs && !jobs.length), (el) => el.child(div().text_size(12.5).text_color(t.muted).child("No cron jobs in any Hermes profile.")))
+        .when(Boolean(this.jobs && !jobs.length), (el) => el.child(div().text_size(13).text_color(t.muted).child("No cron jobs in any Hermes profile.")))
         .children(jobs.map(job)));
   }
 
@@ -299,6 +347,7 @@ export default class Shepherd extends View {
   }
 
   render(cx) {
+    awaitAssets(this, cx);
     if (this.details) return this.details.render(cx);
     if (props()?.menu) return this.renderMenu(props().menu);
     if (props()?.cron) return this.renderCron();
@@ -306,64 +355,78 @@ export default class Shepherd extends View {
     const t = theme();
     const filters = shared(FILTERS) ?? {};
     const cols = this.columns();
-    const chip = (id, name, value, kind) => h_flex().id(id).h(26).px(9).gap(6).flex_none().items_center().rounded(6)
-      .border(1).border_color(t.border).bg(t.chrome).text_size(12).text_color(t.muted)
-      .when(Boolean(kind), (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(() => this.openMenu(kind)))
-      .child(div().text_color(t.dim).child(name))
-      .child(div().max_w(220).truncate().text_color(t.foreground).child(value));
+    const filter = (id, name, value, kind) => h_flex().id(id).h(32).px(10).gap(6).flex_none().items_center().rounded(7)
+      .border_1().border_color(t.input).text_size(13).text_color(t.muted).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).on_click(() => this.openMenu(kind))
+      .child(div().child(name))
+      .child(div().max_w(220).truncate().text_color(t.foreground).child(value))
+      .child(glyph("chevron", 12));
     const fallback = this.data && this.requested && !this.data.matched;
     const status = this.loading && !this.data ? "Loading…"
       : this.updated && this.data ? `${count(cols)} of ${this.data.tasks.length} tasks · updated ${this.updated.toLocaleTimeString()}` : "";
-    const toolbar = h_flex().id("shepherd-toolbar").flex_none().flex_wrap().min_h(42).px(12).py(8).gap(8).items_center()
-      .border_b(1).border_color(t.border).bg(t.chrome)
-      .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Hermes"))
-      .when(Boolean(this.data), (el) => el.child(chip("chip-board", "Board", this.data.board_name, null)))
-      .when(Boolean(fallback), (el) => el.child(div().flex_none().max_w(260).truncate().text_size(11.5).text_color(t.muted)
+    const toolbar = h_flex().id("shepherd-toolbar").flex_none().px(16).py(12).gap(10).items_center()
+      .border_b(1).border_color(t.border)
+      .child(h_flex().flex_none().gap(8).items_center()
+        .child(logo(20))
+        .child(div().text_size(15).font_semibold().text_color(t.foreground).child("Hermes")))
+      .when(Boolean(this.data), (el) => el.child(div().flex_none().font_family(MONO).text_size(12).text_color(t.muted).child(this.data.board_name)))
+      // The texts shrink first, so the filters stay whole in a narrow tab.
+      .when(Boolean(fallback), (el) => el.child(div().min_w(0).max_w(260).truncate().text_size(11.5).text_color(t.muted)
         .child(`No board named “${this.requested}”, showing the default`)))
-      .child(chip("chip-repo", "Repository", describe(filters.repository), "repository"))
-      .child(chip("chip-spec", "Spec", describe(filters.spec), "spec"))
       .child(div().flex_1())
-      .child(div().flex_none().text_size(11.5).text_color(t.dim).child(status))
-      .child(h_flex().id("shepherd-refresh").h(26).px(9).flex_none().items_center().rounded(6).text_size(12).text_color(t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.refresh(cx)).child("Refresh"));
-    const banner = this.error && v_flex().flex_none().mx(12).mt(10).p(10).gap(4).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+      .child(div().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(status))
+      .child(filter("chip-repo", "Repository", describe(filters.repository), "repository"))
+      .child(filter("chip-spec", "Spec", describe(filters.spec), "spec"))
+      .child(button(t, "shepherd-refresh", "Refresh", null, (_e, cx) => this.refresh(cx), "refresh"));
+    const banner = this.error && v_flex().flex_none().mx(16).mt(12).p(10).gap(4).rounded(8).border(1).border_color(t.blocked).bg(tint(t.blocked, "14"))
       .child(div().text_size(12.5).font_semibold().text_color(t.blocked)
         .child(this.data ? "Cannot refresh the Hermes board. Showing the last successful read." : "Cannot read the Hermes board."))
       .child(div().text_size(12).text_color(t.foreground).child(this.error))
-      .child(h_flex().id("shepherd-retry").mt(4).h(24).px(9).flex_none().self_start().items_center().rounded(6).bg(t.solid)
-        .text_size(12).text_color(t.solid_foreground).hover((s) => s.opacity(0.85)).on_click((_e, cx) => this.refresh(cx)).child("Retry"));
+      .child(h_flex().mt(4).child(button(t, "shepherd-retry", "Retry", "primary", (_e, cx) => this.refresh(cx))));
     const card = (task, c, r) => {
       const selected = this.sel?.col === c && this.sel?.row === r;
-      return h_flex().id(`card-${task.id}`).w(CARD).flex_none().p(10).gap(9).items_start().rounded(8)
-        .border(1).border_color(selected ? t.accent : t.border).bg(t.background)
-        .hover((s) => s.bg(t.hover).border_color(selected ? t.accent : t.input))
+      const running = task.status === "running";
+      return v_flex().id(`card-${task.id}`).w_full().flex_none().px(11).py(10).gap(8).rounded(8)
+        .border_1().border_color(selected ? t.accent : task.status === "blocked" ? tint(t.blocked, "8c") : t.border).bg(t.background)
+        .hover((s) => s.border_color(selected ? t.accent : t.input))
         // A running task pulses natively, so active work stands out without a timer.
-        .when(task.status === "running", (el) => el.loop("opacity", { from: 0.6, to: 1, period: 1600 }))
+        .when(running, (el) => el.loop("opacity", { from: 0.6, to: 1, period: 1600 }))
         .on_click((_e, cx) => { this.sel = { col: c, row: r }; this.handle.focus(); this.openTask(task); cx.notify(); })
-        .child(div().mt(4).size(9).flex_none().rounded(5).bg(t[MARKER[task.status]] ?? t.unknown))
-        .child(v_flex().flex_1().min_w(0).gap(5)
-          .child(div().text_size(13).text_color(t.foreground).child(task.title))
-          .when(Boolean(task.parked_reason), (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.parked_reason)))
-          .child(h_flex().gap(6).text_size(11.5).min_w(0)
-            .child(div().flex_none().text_color(task.assignee ? t.muted : t.dim).child(task.assignee || "Unassigned"))
-            .when(Boolean(task.spec), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(`· ${task.spec}`)))))
-        // Its own click must not also open the card.
-        .child(h_flex().id(`card-menu-${task.id}`).size(20).flex_none().items_center().justify_center().rounded(5)
-          .text_color(t.dim).hover((s) => s.bg(t.surface).text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { col: c, row: r }; this.openActions(task); cx.notify(); })
-          .child("⋯"));
+        .child(h_flex().w_full().gap(6).items_center()
+          .child(dot(t, task.status))
+          .child(div().flex_none().font_family(MONO).text_size(11).text_color(t.muted).child(task.id))
+          .child(div().flex_1())
+          .child(avatar(t, task.assignee))
+          // Its own click must not also open the card.
+          .child(h_flex().id(`card-menu-${task.id}`).size(20).flex_none().items_center().justify_center().rounded(5)
+            .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Actions (m)")
+            .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { col: c, row: r }; this.openActions(task); cx.notify(); })
+            .child(glyph("more", 14))))
+        .child(div().text_size(13).font_medium().text_color(t.foreground).child(task.title))
+        .when(running, (el) => el.child(h_flex().flex_none().self_start().gap(6).items_center().px(8).py(2).rounded(999)
+          .bg(tint(t[MARKER.running], "24")).text_size(11).font_medium().text_color(t[MARKER.running])
+          .child(div().size(7).rounded(4).bg(t[MARKER.running])).child("Running")))
+        .when(Boolean(task.parked_reason), (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.parked_reason)))
+        .child(h_flex().w_full().gap(6).items_end()
+          .child(h_flex().flex_1().min_w(0).flex_wrap().gap(4)
+            .when(Boolean(task.spec), (el) => el.child(chip(t, task.spec)))
+            .when(Boolean(task.repository), (el) => el.child(chip(t, short(task.repository ?? "")))))
+          .child(div().flex_none().max_w(140).truncate().text_size(11).text_color(task.assignee ? t.muted : t.dim).child(task.assignee || "Unassigned")));
     };
-    const column = (c, i) => v_flex().id(`col-${c.key}`).relative().w(COLUMN).flex_none().h_full().min_h(0).rounded(9).bg(t.surface)
-      .child(h_flex().flex_none().h(34).px(10).gap(7).items_center()
-        .child(div().size(8).flex_none().rounded(4).bg(t[MARKER[c.key]] ?? t.unknown))
-        .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child(label(c)))
-        .child(div().text_size(12).text_color(t.dim).child(String(c.tasks.length))))
-      .child(v_flex().id(`list-${c.key}`).min_h(0).px(8).pb(8).gap(6).overflow_y_scroll()
+    const column = (c, i) => v_flex().id(`col-${c.key}`).relative().flex_1().min_w(COLUMN).h_full().min_h(0)
+      .rounded(10).border_1().border_color(t.border).bg(t.canvas)
+      .child(h_flex().flex_none().h(42).pl(12).pr(8).gap(8).items_center()
+        .child(dot(t, c.key))
+        .child(div().text_size(13).font_semibold().text_color(t.foreground).child(label(c)))
+        .child(div().px(6).rounded(4).bg(t.raised).font_family(MONO).text_size(11).text_color(t.muted).child(String(c.tasks.length))))
+      .child(v_flex().id(`list-${c.key}`).min_h(0).px(8).pb(10).gap(8).overflow_y_scroll()
         // A vertical wheel over the cards scrolls this column only, even a short one; elsewhere it scrolls the board sideways.
         .on_scroll_wheel((e, cx) => { if (Math.abs(e.delta.y) > Math.abs(e.delta.x)) cx.stop_propagation(); })
-        .children(c.tasks.map((task, r) => card(task, i, r))))
-      .child(Scrollbar.vertical(`list-${c.key}`).absolute().top(34).bottom(0).left(0).right(0));
-    return v_flex().id("shepherd").size_full().min_w(0).bg(t.canvas).track_focus(this.handle)
+        .children(c.tasks.map((task, r) => card(task, i, r)))
+        .when(!c.tasks.length, (el) => el.child(div().p(14).rounded(8).border_1().border_dashed().border_color(t.input)
+          .text_size(12).text_color(t.muted).text_center().child("No tasks"))))
+      .child(Scrollbar.vertical(`list-${c.key}`).absolute().top(42).bottom(0).left(0).right(0));
+    return v_flex().id("shepherd").size_full().min_w(0).bg(t.background).text_color(t.foreground).track_focus(this.handle)
       .on_size_change((size, cx) => {
         if (size.width > 0) this.claim(cx);
         const width = size.width / settings().zoom;
@@ -386,7 +449,7 @@ export default class Shepherd extends View {
       // overflow_x_scroll, unlike overflow_x_scrollbar, also turns a vertical wheel into sideways scrolling.
       // The bar shows only while the columns overflow; it would show a full-width thumb otherwise.
       .when(Boolean(this.data), (el) => el.child(div().flex_1().min_h(0).relative()
-        .child(h_flex().id("shepherd-board").size_full().p(BOARD_PAD).gap(COLUMN_GAP).items_start().overflow_x_scroll().children(cols.map(column)))
+        .child(h_flex().id("shepherd-board").size_full().px(BOARD_PAD).pt(14).pb(16).gap(COLUMN_GAP).items_start().overflow_x_scroll().children(cols.map(column)))
         .when(cols.length * (COLUMN + COLUMN_GAP) - COLUMN_GAP + 2 * BOARD_PAD > this.width, (el) => el.child(Scrollbar.horizontal("shepherd-board").mode("always").absolute().inset_0()))));
   }
 
@@ -575,76 +638,83 @@ class TaskDetails {
   render(cx) {
     const t = theme();
     const task = this.task;
-    const button = (id, text, primary, action) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
-      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
-    const section = (title, ...extra) => h_flex().pt(16).pb(6).gap(8).items_center()
-      .child(div().flex_1().text_size(11.5).font_semibold().text_color(t.dim).child(title)).children(extra.filter(Boolean));
-    const fact = (name, value) => value ? h_flex().gap(6).min_w(0).text_size(12)
-      .child(div().flex_none().text_color(t.dim).child(name))
-      .child(div().min_w(0).truncate().text_color(t.foreground).child(String(value))) : null;
-    const markdown = (id, text) => TextView.markdown(id, text).selectable(true).text_size(13);
+    const meta = (name, value, mono) => value ? v_flex().gap(4).min_w(0)
+      .child(heading(t, name))
+      .child(div().min_w(0).text_size(mono ? 12 : 13).when(Boolean(mono), (el) => el.font_family(MONO)).text_color(t.foreground).child(String(value))) : null;
+    const markdown = (id, text) => TextView.markdown(id, text).selectable(true).text_size(13.5);
+    const close = () => closeOverlay(props().overlay);
 
-    const header = h_flex().flex_none().px(18).pt(16).pb(10).gap(10).items_start()
-      .child(v_flex().flex_1().min_w(0).gap(6)
-        .child(div().text_size(15).font_semibold().text_color(t.foreground).child(task?.title ?? "Loading…"))
-        .when(Boolean(task), (el) => el.child(h_flex().gap(8).items_center().text_size(12)
-          .child(div().size(9).flex_none().rounded(5).bg(t[MARKER[task.status]] ?? t.unknown))
-          .child(div().text_color(t.foreground).child(status(task.status)))
-          .child(div().text_color(task.assignee ? t.muted : t.dim).child(`· ${task.assignee || "Unassigned"}`))
-          .child(div().text_color(t.dim).child(`· ${this.ref.id}`)))))
-      .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
-      .child(h_flex().id("details-close").size(24).flex_none().items_center().justify_center().rounded(6)
-        .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click(() => closeOverlay(props().overlay)).child("✕"));
-
-    const tabs = h_flex().flex_none().px(18).gap(4).items_center().border_b(1).border_color(t.border)
-      .children(TABS.map((tab) => h_flex().id(`details-tab-${tab.key}`).h(30).px(10).items_center().text_size(12.5)
-        .border_b(2).border_color(tab.key === this.tab ? t.accent : t.popover)
-        .text_color(tab.key === this.tab ? t.foreground : t.muted).hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { this.tab = tab.key; this.handle.focus(); cx.notify(); }).child(tab.label ?? savedRules().name)))
-      .child(div().flex_1())
-      .child(div().flex_none().text_size(11).text_color(t.dim).child("← → switch tabs"));
-
-    const banner = (text, color) => div().mt(10).p(10).rounded(7).border(1).border_color(color).bg(t.surface)
-      .text_size(12).text_color(t.foreground).child(text);
+    const bar = titleBar(t, "details", [
+      div().flex_none().font_family(MONO).text_size(12).text_color(t.muted).child("task"),
+      div().flex_none().font_family(MONO).text_size(12).text_color(t.foreground).child(this.ref.id),
+    ], close);
 
     if (task && this.tab === "sessions") this.scanSessions(cx);
-    const body = task && this.tab === "sessions" ? this.sessions(t, banner) : task && v_flex().flex_1().min_h(0).px(18).pb(18).overflow_y_scrollbar()
-      .child(h_flex().flex_wrap().gap_x(16).gap_y(4).pt(4)
-        .children([
-          fact("Spec", task.spec), fact("Repository", task.repository), fact("Workspace", task.workspace),
-          fact("Priority", task.priority), fact("Created", when(task.created_at)), fact("Started", when(task.started_at)),
-          fact("Completed", when(task.completed_at)),
-          fact("Parents", task.parents.map((p) => `${p.title} (${status(p.status)})`).join(", ")),
-          fact("Children", task.children.map((c) => `${c.title} (${status(c.status)})`).join(", ")),
-        ].filter(Boolean)))
-      .when(Boolean(this.notice), (el) => el.child(banner(this.notice, t.blocked)))
-      .child(section("Description",
-        !task.editable && div().text_size(11.5).text_color(t.dim).child(task.edit_blocked),
-        // A locked task's leftover draft still opens, so it can be copied or discarded.
-        !this.editing && (task.editable || this.draft || this.stored())
-          && button("details-edit", this.draft || this.stored() ? task.editable ? "Edit draft" : "View draft" : "Edit", false, (_e, cx) => this.edit(cx))))
-      .child(this.editing
-        ? v_flex().gap(8)
-          .child(Textarea.new(this.draft).w_full().h(320).p(10).rounded(7).border_1().border_color(t.accent)
-            .bg(t.background).text_color(t.foreground).text_size(13))
-          .child(h_flex().gap(8).items_center()
-            .child(div().flex_1().text_size(11.5).text_color(t.dim).child(task.editable ? "Markdown. Ctrl+Enter saves. The draft is kept until you save or discard it."
-              : "This task is locked. Copy what you need from the draft, then discard it."))
-            .child(button("details-discard", "Discard", false, (_e, cx) => this.discard(cx)))
-            .child(button("details-close-editor", "Close", false, (_e, cx) => this.stopEditing(cx)))
-            .when(task.editable, (el) => el.child(button("details-save", this.saving ? "Saving…" : "Save", true, (_e, cx) => this.save(cx)))))
-        : task.body ? markdown(`details-body-${task.version}`, task.body)
-          : div().text_size(12.5).text_color(t.dim).child("No description."))
-      .when(Boolean(task.result), (el) => el.child(section("Result")).child(markdown("details-result", task.result)))
-      .child(section("History"))
-      .children(this.history(task, t, markdown));
-
     const records = this.tab === "sessions" ? (this.scan?.records ?? []).slice(0, this.shown) : [];
     if (records.length) this.at = Math.min(this.at, records.length - 1); // a rescan can shorten the list
-    return v_flex().id("details").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground)
+    const badge = (key) => key === "details" ? (task ? String(task.comments.length) : null)
+      : this.scan?.records ? String(this.scan.records.length) : null;
+    const head = v_flex().flex_none().px(20).pt(16)
+      .when(Boolean(task), (el) => el.child(h_flex().flex_wrap().gap(8).items_center()
+        .child(statusChip(t, task.status))
+        .child(h_flex().flex_none().gap(6).items_center().text_size(12).text_color(task.assignee ? t.muted : t.dim)
+          .child(avatar(t, task.assignee, 18)).child(task.assignee || "Unassigned"))))
+      .child(div().mt(10).text_size(19).font_semibold().text_color(t.foreground).child(task?.title ?? "Loading…"))
+      .child(h_flex().mt(14).gap(20).items_end().border_b(1).border_color(t.border)
+        .children(TABS.map((tab) => {
+          const on = tab.key === this.tab;
+          const count = badge(tab.key);
+          return h_flex().id(`details-tab-${tab.key}`).py(10).gap(6).items_center().text_size(13).font_medium()
+            .border_b(2).border_color(on ? t.accent : tint(t.accent, "00")).text_color(on ? t.foreground : t.muted)
+            .hover((s) => s.text_color(t.foreground)).cursor_pointer()
+            .on_click((_e, cx) => { this.tab = tab.key; this.handle.focus(); cx.notify(); })
+            .child(tab.label ?? savedRules().name)
+            .when(count !== null, (el) => el.child(div().px(5).rounded(4).font_family(MONO).text_size(11)
+              .bg(on ? tint(t.accent, "2e") : t.raised).text_color(on ? t.accent : t.muted).child(count)));
+        }))
+        .child(div().flex_1())
+        .child(div().flex_none().pb(10).text_size(11).text_color(t.dim).child("← → switch tabs")));
+
+    const banner = (text, color) => div().p(10).rounded(8).border(1).border_color(color).bg(tint(color, "14"))
+      .text_size(12).text_color(t.foreground).child(text);
+
+    const editor = task && (this.editing
+      ? v_flex().gap(8)
+        .child(Textarea.new(this.draft).w_full().h(320).p(10).rounded(8).border_1().border_color(t.accent)
+          .bg(t.chrome).text_color(t.foreground).text_size(13))
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().text_size(11.5).text_color(t.muted).child(task.editable ? "Markdown. Ctrl+Enter saves. The draft is kept until you save or discard it."
+            : "This task is locked. Copy what you need from the draft, then discard it."))
+          .child(button(t, "details-discard", "Discard", null, (_e, cx) => this.discard(cx)))
+          .child(button(t, "details-close-editor", "Close", null, (_e, cx) => this.stopEditing(cx)))
+          .when(task.editable, (el) => el.child(button(t, "details-save", this.saving ? "Saving…" : "Save", "primary", (_e, cx) => this.save(cx)))))
+      : task.body ? markdown(`details-body-${task.version}`, task.body)
+        : div().text_size(13).text_color(t.muted).child("No description."));
+
+    const body = task && this.tab === "sessions" ? this.sessions(t, banner) : task && h_flex().flex_1().min_h(0).items_start()
+      .child(v_flex().id("details-main").flex_1().min_w(0).h_full().px(20).pt(18).pb(20).gap(22).overflow_y_scrollbar()
+        .when(Boolean(this.notice), (el) => el.child(banner(this.notice, t.blocked)))
+        .child(v_flex().gap(8)
+          .child(h_flex().gap(8).items_center().child(div().flex_1().child(heading(t, "Description")))
+            // A locked task's leftover draft still opens, so it can be copied or discarded.
+            .when(Boolean(!this.editing && (task.editable || this.draft || this.stored())), (el) => el.child(button(t, "details-edit",
+              this.draft || this.stored() ? task.editable ? "Edit draft" : "View draft" : "Edit", null, (_e, cx) => this.edit(cx)))))
+          .when(!task.editable, (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.edit_blocked)))
+          .child(editor))
+        .when(Boolean(task.result), (el) => el.child(v_flex().gap(8).child(heading(t, "Result")).child(markdown("details-result", task.result))))
+        .child(v_flex().gap(12).child(heading(t, `History · ${task.comments.length + task.runs.length + task.events.filter((e) => e.kind !== "commented").length}`))
+          .children(this.history(task, t, markdown))))
+      .child(v_flex().id("details-aside").w(240).flex_none().h_full().px(18).pt(18).pb(20).gap(14).overflow_y_scrollbar()
+        .border_l(1).border_color(t.border).bg(t.background)
+        .children([
+          meta("Assignee", task.assignee || "Unassigned"), meta("Spec", task.spec, true), meta("Repository", task.repository, true),
+          meta("Workspace", task.workspace, true), meta("Priority", task.priority), meta("Created", when(task.created_at)),
+          meta("Started", when(task.started_at)), meta("Completed", when(task.completed_at)),
+          meta("Parents", task.parents.map((p) => `${p.title} (${status(p.status)})`).join(", ")),
+          meta("Children", task.children.map((c) => `${c.title} (${status(c.status)})`).join(", ")),
+        ].filter(Boolean)));
+
+    return v_flex().id("details").track_focus(this.handle).size_full().min_h(0).bg(t.canvas).text_color(t.foreground)
       .on_key_down((e, cx) => {
         if (e.key === "escape") closeOverlay(props().overlay);
         // Only while the dialog itself has the keyboard: in the editor these keys edit text.
@@ -658,9 +728,9 @@ class TaskDetails {
         else return;
         cx.stop_propagation(); cx.notify();
       })
-      .child(header)
-      .child(tabs)
-      .when(Boolean(this.error), (el) => el.child(div().px(18).child(banner(
+      .child(bar)
+      .child(head)
+      .when(Boolean(this.error), (el) => el.child(div().px(20).pt(10).child(banner(
         task ? `Cannot refresh this task. Showing the last successful read. ${this.error}` : this.error, t.blocked))))
       .when(Boolean(body), (el) => el.child(body));
   }
@@ -732,50 +802,66 @@ class TaskDetails {
     const scan = this.scan;
     const saved = savedRules();
     const records = scan?.records ?? [];
-    const note = (text) => div().pt(10).text_size(12.5).text_color(t.dim).child(text);
+    const rulesUsed = new Set(records.map((r) => r.rule)).size;
+    const note = (text) => div().text_size(13).text_color(t.muted).child(text);
     const item = (r, i) => {
       const key = recordKey(r);
       const launch = this.launches[key] ?? (r.refused && { text: r.refused, failed: true });
-      return v_flex().id(`session-${key}`).flex_none().p(10).gap(4).rounded(7).border(1)
+      const rule = saved.rules?.[r.rule];
+      return h_flex().id(`session-${key}`).flex_none().flex_wrap().gap(16).p(14).rounded(8).border(1)
         .border_color(i === this.at ? t.accent : t.border).bg(t.background)
-        .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.at = i; this.handle.focus(); this.launch(r, key, cx); })
-        .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().min_w(0).text_size(13).text_color(t.foreground).child(r.description || "(empty description)"))
-          .child(div().flex_none().px(6).rounded(5).bg(t.surface).text_size(11.5).text_color(t.muted).child(r.tab ? "New tab" : "Background")))
-        .child(div().text_size(11.5).text_color(t.dim).child(r.argv.map(shown).join(" ")))
-        .when(Boolean(launch), (el) => el.child(div().text_size(12).text_color(launch.failed ? t.blocked : t.muted).child(launch.text)));
+        .cursor_pointer().hover((s) => s.border_color(i === this.at ? t.accent : t.input))
+        .on_click((_e, cx) => { this.at = i; this.handle.focus(); this.launch(r, key, cx); })
+        .child(v_flex().w(220).flex_none().min_w(0).gap(4)
+          .child(div().text_size(13).font_semibold().text_color(t.foreground).child(r.description || "(empty description)"))
+          .child(div().text_size(11).text_color(t.muted).child(`${r.tab ? "New tab" : "Background"} · Rule ${r.rule + 1}`))
+          .when(Boolean(rule), (el) => el.child(div().text_size(11).text_color(t.muted).child(rule.regex))))
+        .child(v_flex().flex_1().min_w(240).gap(6).justify_center()
+          .child(div().self_start().max_w_full().px(7).py(1).rounded(5).border_1().border_color(t.border).bg(t.chrome)
+            .text_size(12).text_color(t.foreground).child(r.argv.map(shown).join(" ")))
+          .when(Boolean(launch), (el) => el.child(div().text_size(12).text_color(launch.failed ? t.blocked : t.muted).child(launch.text))));
     };
-    return v_flex().flex_1().min_h(0).px(18).pb(18).pt(10).gap(8).overflow_y_scrollbar()
-      .child(div().text_size(11.5).text_color(t.dim).child("Records your rules find in the description, result, comments and run summaries. "
-        + "A click, or ↑ ↓ and Enter, starts the command again, in the selected space's folder. Settings at the top right edits the rules."))
+    return v_flex().id("details-records").flex_1().min_h(0).px(20).pt(16).pb(20).gap(12).overflow_y_scrollbar()
+      .child(h_flex().flex_none().flex_wrap().gap(10).items_center().px(12).py(10).rounded(8).bg(t.chrome).border_1().border_color(t.border)
+        .child(div().flex_1().min_w(0).text_size(12.5).text_color(t.muted)
+          .child(scan?.records ? `${records.length} records from ${rulesUsed} of ${saved.rules?.length ?? 0} rules · the rules live in Settings` : "The rules live in Settings"))
+        .child(h_flex().id("records-edit-rules").flex_none().px(6).py(4).rounded(5).text_size(12).font_medium().text_color(t.accent).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).on_click(() => CONTROLS.find((c) => c.id === "settings").run()).child("Edit rules")))
+      .child(div().text_size(11.5).text_color(t.muted).child("Records your rules find in the description, result, comments and run summaries. "
+        + "A click, or ↑ ↓ and Enter, starts the command again, in the selected space's folder."))
       .when(Boolean(scan?.error), (el) => el.child(banner(scan.error, t.blocked)))
       .children((scan?.errors ?? []).map((e) => banner(e.error, t.blocked)))
-      .when(!saved.error && !saved.rules?.length, (el) => el.child(note("No rules yet. Add them with Settings at the top right.")))
+      .when(!saved.error && !saved.rules?.length, (el) => el.child(note("No rules yet. Add them with Edit rules or Settings at the top right.")))
       .when(Boolean(saved.rules?.length && scan && !scan.records && !scan.error), (el) => el.child(note("Reading…")))
       .when(Boolean(scan?.records && !records.length), (el) => el.child(note("The rules find no records in this task.")))
       .children(records.slice(0, this.shown).map(item))
       .when(records.length > this.shown, (el) => el.child(h_flex().pt(6).gap(10).items_center()
-        .child(div().text_size(12.5).text_color(t.dim).child(`Showing ${this.shown} of ${records.length} records.`))
-        .child(h_flex().id("sessions-more").h(26).px(9).items_center().rounded(6).border_1().border_color(t.input).bg(t.raised)
-          .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.opacity(0.88))
-          .on_click((_e, cx) => { this.shown += RECORDS_SHOWN; cx.notify(); }).child(`Show ${Math.min(RECORDS_SHOWN, records.length - this.shown)} more`))));
+        .child(div().text_size(12.5).text_color(t.muted).child(`Showing ${this.shown} of ${records.length} records.`))
+        .child(button(t, "sessions-more", `Show ${Math.min(RECORDS_SHOWN, records.length - this.shown)} more`, null,
+          (_e, cx) => { this.shown += RECORDS_SHOWN; cx.notify(); }))));
   }
 
   // Comments, runs and events in time order. Text is rendered as written; nothing is rewritten.
   history(task, t, markdown) {
     const items = [
-      ...task.events.filter((e) => e.kind !== "commented").map((e) => ({ at: e.at, el: div().text_size(11.5).text_color(t.dim)
-        .child(`${e.kind.replaceAll("_", " ")}${e.payload?.reason ? `: ${e.payload.reason}` : ""} · ${when(e.at)}`) })),
-      ...task.comments.map((c, i) => ({ at: c.at, el: v_flex().gap(4).p(10).rounded(7).bg(t.surface)
-        .child(div().text_size(11.5).text_color(t.dim).child(`${c.author} · ${when(c.at)}`))
-        .child(markdown(`details-comment-${i}`, c.body)) })),
-      ...task.runs.map((r, i) => ({ at: r.started_at, el: v_flex().gap(4).p(10).rounded(7).border(1).border_color(t.border)
-        .child(div().text_size(11.5).text_color(t.dim)
-          .child(`Run · ${r.profile || "Unassigned"} · ${r.outcome || r.status} · ${when(r.started_at)}${r.ended_at ? ` to ${when(r.ended_at)}` : ""}`))
+      ...task.events.filter((e) => e.kind !== "commented").map((e) => ({ at: e.at, el: h_flex().gap(8).items_center().text_size(12).text_color(t.muted)
+        .child(div().w(26).flex_none().flex().justify_center().child(div().size(6).rounded(3).bg(t.input)))
+        .child(div().min_w(0).child(`${e.kind.replaceAll("_", " ")}${e.payload?.reason ? `: ${e.payload.reason}` : ""} · ${when(e.at)}`)) })),
+      ...task.comments.map((c, i) => ({ at: c.at, el: h_flex().gap(10).items_start()
+        .child(avatar(t, c.author, 26))
+        .child(v_flex().flex_1().min_w(0).gap(3)
+          .child(h_flex().gap(8).items_center().text_size(12)
+            .child(div().font_semibold().text_color(t.foreground).child(c.author))
+            .child(div().text_color(t.muted).child(when(c.at))))
+          .child(markdown(`details-comment-${i}`, c.body))) })),
+      ...task.runs.map((r, i) => ({ at: r.started_at, el: v_flex().gap(4).p(10).rounded(8).border(1).border_color(t.border).bg(t.background)
+        .child(h_flex().gap(8).items_center().text_size(12)
+          .child(div().font_semibold().text_color(t.foreground).child("Run"))
+          .child(div().text_color(t.muted).child(`${r.profile || "Unassigned"} · ${r.outcome || r.status} · ${when(r.started_at)}${r.ended_at ? ` to ${when(r.ended_at)}` : ""}`)))
         .when(Boolean(r.summary || r.error), (el) => el.child(markdown(`details-run-${i}`, r.summary || r.error))) })),
     ];
-    if (!items.length) return [div().text_size(12.5).text_color(t.dim).child("No history.")];
-    return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-history-${i}`).pb(6).child(item.el));
+    if (!items.length) return [div().text_size(13).text_color(t.muted).child("No history.")];
+    return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-history-${i}`).child(item.el));
   }
 }
 
@@ -873,37 +959,43 @@ class SessionSettings {
 
   render(_cx) {
     const t = theme();
-    const button = (id, text, primary, action) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
-      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
-    const small = (id, text, enabled, action) => h_flex().id(id).h(24).px(8).flex_none().items_center().rounded(6).text_size(12)
-      .text_color(enabled ? t.muted : t.dim).when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action))
+    const small = (id, text, enabled, action) => h_flex().id(id).h(26).px(8).flex_none().items_center().rounded(6).text_size(12)
+      .border_1().border_color(enabled ? t.input : t.border)
+      .text_color(enabled ? t.foreground : t.dim).when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(action))
       .child(text);
-    const field = (name, state) => v_flex().gap(3)
-      .child(div().text_size(11.5).text_color(t.dim).child(name))
-      .child(Input.new(state).h(30).px(8).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(12.5).text_color(t.foreground));
-    const rule = (row, i) => v_flex().id(`rule-${i}`).flex_none().p(12).gap(8).rounded(8).border(1)
-      .border_color(this.errors[i] ? t.blocked : i === this.at ? t.accent : t.border).bg(t.surface)
+    // Not in Geist Mono: it draws " --" without the space, and commands must read exactly as they run.
+    const input = (state) => Input.new(state).h(30).px(8).rounded(6).border_1().border_color(t.input).bg(t.chrome)
+      .text_size(12.5).text_color(t.foreground);
+    // A setting: its name and what it does on the left, its input on the right.
+    const setting = (name, about, state) => h_flex().flex_wrap().gap(12).items_center().py(14).border_b(1).border_color(t.border)
+      .child(v_flex().flex_1().min_w(300).gap(2)
+        .child(div().text_size(13).font_medium().text_color(t.foreground).child(name))
+        .child(div().text_size(12).text_color(t.muted).child(about)))
+      .child(div().w(240).flex_none().child(input(state)));
+    const field = (name, state) => v_flex().gap(4)
+      .child(div().text_size(11.5).text_color(t.muted).child(name))
+      .child(input(state));
+    // Open in new tab, drawn as a switch.
+    const toggle = (row, i) => h_flex().id(`rule-tab-${i}`).gap(8).items_center().cursor_pointer().text_size(12).text_color(t.foreground)
+      .on_click((_e, cx) => this.toggle(i, cx))
+      .child(div().relative().w(34).h(20).flex_none().rounded(10).bg(row.tab ? t.accent : t.input)
+        .child(div().absolute().top(3).left(row.tab ? 17 : 3).size(14).rounded(7).bg(row.tab ? t.accent_foreground : t.muted)))
+      .child(`Open in new tab: ${row.tab ? "on" : "off"}`);
+    const rule = (row, i) => v_flex().id(`rule-${i}`).flex_none().p(12).gap(10).rounded(8).border(1)
+      .border_color(this.errors[i] ? t.blocked : i === this.at ? t.accent : t.border).bg(t.background)
       .on_mouse_down("left", (_e, cx) => { if (this.at !== i) { this.at = i; cx.notify(); } })
-      .child(h_flex().gap(6).items_center()
-        .child(div().flex_1().text_size(12.5).font_semibold().text_color(t.foreground).child(`Rule ${i + 1}`))
-        .child(h_flex().id(`rule-tab-${i}`).gap(6).items_center().cursor_pointer().text_size(12).text_color(t.foreground)
-          .on_click((_e, cx) => this.toggle(i, cx))
-          .child(h_flex().size(15).flex_none().items_center().justify_center().rounded(4).border_1()
-            .border_color(row.tab ? t.accent : t.input).bg(row.tab ? t.accent : t.background)
-            .text_size(11).text_color(t.accent_foreground).child(row.tab ? "✓" : ""))
-          .child("Open in new tab"))
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().text_size(13).font_semibold().text_color(t.foreground).child(`Rule ${i + 1}`))
+        .child(toggle(row, i))
         .child(div().w(8))
         .child(small(`rule-up-${i}`, "Up", i > 0, (_e, cx) => this.move(i, -1, cx)))
         .child(small(`rule-down-${i}`, "Down", i < this.rows.length - 1, (_e, cx) => this.move(i, 1, cx)))
         .child(small(`rule-remove-${i}`, "Remove", true, (_e, cx) => this.remove(i, cx))))
       .child(field("Regex", row.regex))
-      .child(field("Command", row.command))
-      .child(field("Description", row.description))
+      .child(h_flex().gap(10).child(div().flex_1().child(field("Command", row.command))).child(div().flex_1().child(field("Description", row.description))))
       .children((this.errors[i] ?? []).map((text) => div().text_size(12).text_color(t.blocked).child(text)));
 
-    return v_flex().id("session-settings").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground)
+    return v_flex().id("session-settings").track_focus(this.handle).size_full().min_h(0).bg(t.canvas).text_color(t.foreground)
       .key_context("ShepherdSettings")
       .on_action("shepherd-settings-escape", (_e, cx) => {
         if (this.confirming) { this.confirming = false; cx.notify(); } else this.leave(cx);
@@ -920,43 +1012,43 @@ class SessionSettings {
         else return;
         cx.stop_propagation(); cx.notify();
       })
-      .child(h_flex().flex_none().px(18).pt(16).pb(10).gap(10).items_start().border_b(1).border_color(t.border)
-        .child(v_flex().flex_1().min_w(0).gap(4)
-          .child(div().text_size(15).font_semibold().child("Settings"))
-          .child(div().text_size(11.5).text_color(t.dim).child("Shared by every Shepherd tab. A task's records tab lists what the rules find in its "
-            + "description, result, comments and run summaries. At each place in the text the earliest match wins, and the first rule among matches there.")))
-        .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
-        .child(h_flex().id("settings-close").size(24).flex_none().items_center().justify_center().rounded(6)
-          .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click((_e, cx) => this.leave(cx)).child("✕")))
-      .child(v_flex().id("rules").flex_1().min_h(0).px(18).py(12).gap(10).overflow_y_scrollbar()
-        .child(field("Hermes profile: the Shepherd panel runs `hermes -p <profile>`; a change applies at its next start or Restart", this.profile))
-        .child(field("Records tab name: the task popup's tab that lists the records", this.name))
-        .child(div().pt(6).text_size(12.5).font_semibold().text_color(t.foreground).child("Rules"))
-        .child(div().text_size(12).text_color(t.muted).child("Regex: a Python regular expression. Command and Description: $1, $2 … insert capture groups, "
-          + "$0 the whole match, $$ a dollar sign. The command is split into arguments the way a shell would (quotes, backslashes) before "
-          + "captures go in, so a capture is always literal text inside one argument. It runs without a shell, through Herdr Core, "
-          + "in the selected space's folder: in a new tab, or in the background when Open in new tab is off. Matching stops a rule "
-          + "that spends more than half of 3 s on a task, and matches the other rules without it. A record whose command would get "
-          + "a capture starting with “-” is not started, so task text cannot add options."))
-        .child(div().text_size(12).text_color(t.muted).child("Keys act on the outlined rule; a click, typing or ↑ ↓ outlines one, and Enter edits it. "
-          + "Alt+Shift+↑ and Alt+Shift+↓ move it, Alt+T toggles Open in new tab, and Alt+Shift+Backspace removes it, also while typing in it."))
-        .when(Boolean(this.malformed), (el) => el.child(v_flex().p(10).gap(6).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
+      .child(titleBar(t, "settings", [div().text_size(13).font_semibold().text_color(t.foreground).child("Settings"),
+        div().text_size(12).text_color(t.muted).child("Shared by every Shepherd tab")], (_e, cx) => this.leave(cx)))
+      .child(v_flex().id("rules").flex_1().min_h(0).px(20).pt(6).pb(16).gap(10).overflow_y_scrollbar()
+        .child(v_flex()
+          .child(setting("Hermes profile", "The Shepherd panel runs `hermes -p <profile>`. A change applies at its next start or Restart.", this.profile))
+          .child(setting("Records tab name", "The task popup's tab that lists the records the rules find.", this.name)))
+        .child(v_flex().pt(12).gap(6)
+          .child(heading(t, "Record rules"))
+          .child(div().text_size(12).text_color(t.muted).child("Each rule finds records in a task's description, result, comments and run summaries. "
+            + "At each place in the text the earliest match wins, and the first rule among matches there."))
+          .child(div().text_size(12).text_color(t.muted).child("Regex: a Python regular expression. Command and Description: $1, $2 … insert capture groups, "
+            + "$0 the whole match, $$ a dollar sign. The command is split into arguments the way a shell would (quotes, backslashes) before "
+            + "captures go in, so a capture is always literal text inside one argument. It runs without a shell, through Herdr Core, "
+            + "in the selected space's folder: in a new tab, or in the background when Open in new tab is off. Matching stops a rule "
+            + "that spends more than half of 3 s on a task, and matches the other rules without it. A record whose command would get "
+            + "a capture starting with “-” is not started, so task text cannot add options."))
+          .child(div().text_size(12).text_color(t.muted).child("Keys act on the outlined rule; a click, typing or ↑ ↓ outlines one, and Enter edits it. "
+            + "Alt+Shift+↑ and Alt+Shift+↓ move it, Alt+T toggles Open in new tab, and Alt+Shift+Backspace removes it, also while typing in it.")))
+        .when(Boolean(this.malformed), (el) => el.child(v_flex().p(10).gap(6).rounded(8).border(1).border_color(t.blocked).bg(tint(t.blocked, "14"))
           .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child(this.malformed.error))
           .child(div().text_size(12).text_color(t.foreground).child("They are kept as they are. Saving here replaces them with the rules below."))
           .child(TextView.markdown("settings-raw", `\`\`\`json\n${this.malformed.raw}\n\`\`\``).selectable(true).text_size(12))))
-        .when(!this.rows.length, (el) => el.child(div().text_size(12.5).text_color(t.dim).child("No rules yet.")))
+        .when(!this.rows.length, (el) => el.child(div().text_size(13).text_color(t.muted).child("No rules yet.")))
         .children(this.rows.map(rule))
-        .child(h_flex().child(button("rule-add", "Add rule", false, (_e, cx) => this.edit(cx, () => { this.at = this.rows.push(this.row()) - 1; })))))
-      .child(h_flex().flex_none().px(18).py(12).gap(8).items_center().border_t(1).border_color(t.border)
+        .child(h_flex().child(h_flex().id("rule-add").h(30).px(10).gap(6).items_center().rounded(7).border_1().border_dashed().border_color(t.input)
+          .text_size(12).text_color(t.foreground).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.edit(cx, () => { this.at = this.rows.push(this.row()) - 1; }))
+          .child(glyph("plus", 13)).child("Add rule"))))
+      .child(h_flex().flex_none().px(16).py(12).gap(8).items_center().border_t(1).border_color(t.border)
         .children(this.confirming ? [
           div().flex_1().text_size(12.5).text_color(t.blocked).child("Discard your unsaved changes?"),
-          button("settings-keep", "Keep editing", false, (_e, cx) => { this.confirming = false; cx.notify(); }),
-          button("settings-discard", "Discard", true, () => closeOverlay(props().overlay)),
+          button(t, "settings-keep", "Keep editing", null, (_e, cx) => { this.confirming = false; cx.notify(); }),
+          button(t, "settings-discard", "Discard", "danger", () => closeOverlay(props().overlay)),
         ] : [
           div().flex_1().min_w(0).text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice),
-          button("settings-cancel", "Close", false, (_e, cx) => this.leave(cx)),
-          button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx)),
+          button(t, "settings-cancel", "Close", null, (_e, cx) => this.leave(cx)),
+          button(t, "settings-save", this.saving ? "Checking…" : "Save", "primary", (_e, cx) => this.save(cx)),
         ]));
   }
 }
@@ -966,7 +1058,7 @@ class SessionSettings {
 // saw; the helper rechecks it and refuses a task that changed, so an open menu or confirmation never acts
 // on stale state. Hermes's own operations make the change; a refusal shows Hermes's reason.
 
-const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 760, height: 0.85, props: { task: ref } });
+const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 880, height: 0.85, props: { task: ref } });
 const openConfirm = (action, ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 520, height: 340,
   props: { confirm: { action, board: ref.board, db: ref.db, id: ref.id } } });
 const VERB = { todo: "Send to Todo", ready: "Send to Ready", archive: "Archive", restore: "Restore to Triage", delete: "Delete permanently" };
@@ -990,12 +1082,7 @@ function announce(action, title, reply) {
   notify({ title: `${VERB[action]}: ${title}`, body, level: "success" });
 }
 
-const actionButton = (t, id, text, kind, onClick) => h_flex().id(id).h(28).px(12).flex_none().items_center().rounded(7)
-  .border_1().border_color(kind === "primary" ? t.solid : kind === "danger" ? t.blocked : t.input)
-  .bg(kind === "primary" ? t.solid : kind === "danger" ? t.blocked : t.raised)
-  .text_color(kind ? t.solid_foreground : t.foreground).text_size(12).cursor_pointer()
-  .hover((s) => s.opacity(0.88)).on_click(onClick).child(text);
-const errorBox = (t, text) => div().p(8).rounded(7).border(1).border_color(t.blocked).bg(t.surface).text_size(12).text_color(t.foreground).child(text);
+const errorBox = (t, text) => div().p(10).rounded(8).border(1).border_color(t.blocked).bg(tint(t.blocked, "14")).text_size(12).text_color(t.foreground).child(text);
 
 class ActionMenu {
   init(cx) {
@@ -1120,7 +1207,7 @@ class Confirm {
     const { action } = this.ref;
     const task = this.task;
     const ok = task && allowed(action, task.status);
-    return v_flex().id("confirm-action").track_focus(this.handle).size_full().min_h(0).p(18).gap(10).bg(t.popover).text_size(13)
+    return v_flex().id("confirm-action").track_focus(this.handle).size_full().min_h(0).bg(t.canvas).text_size(13)
       .on_key_down((e, cx) => {
         // Enter confirms, except a permanent delete, which takes a click.
         if (e.key === "enter" && action !== "delete") this.confirm(cx);
@@ -1128,17 +1215,15 @@ class Confirm {
         else return;
         cx.stop_propagation();
       })
-      .child(h_flex().items_center().gap(8)
-        .child(div().flex_1().min_w(0).truncate().text_size(15).font_semibold().text_color(t.foreground)
-          .child(`${action === "archive" ? "Archive" : action === "restore" ? "Restore" : "Delete"} “${task?.title ?? "…"}”?`))
-        .child(div().text_size(11).text_color(t.dim).child("Esc")))
-      .child(v_flex().flex_1().min_h(0).gap(8).overflow_y_scrollbar().text_color(t.muted)
+      .child(titleBar(t, "confirm", [div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground)
+        .child(`${action === "archive" ? "Archive" : action === "restore" ? "Restore" : "Delete"} “${task?.title ?? "…"}”?`)], () => closeOverlay(props().overlay)))
+      .child(v_flex().id("confirm-body").flex_1().min_h(0).px(20).py(16).gap(10).overflow_y_scrollbar().text_color(t.muted)
         .when(Boolean(task && !ok), (el) => el.child(div().text_color(t.foreground).child(`The task is ${status(task.status)} now, so it cannot be ${action === "archive" ? "archived" : action === "restore" ? "restored" : "deleted"}.`)))
         .when(Boolean(ok), (el) => el.children(this.effects(task).filter(Boolean).map((text) => div().child(text))))
         .when(Boolean(this.error), (el) => el.child(errorBox(t, this.error))))
-      .child(h_flex().justify_end().gap(8)
-        .child(actionButton(t, "confirm-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
-        .when(Boolean(ok), (el) => el.child(actionButton(t, "confirm-yes", this.busy ? "Working…" : VERB[action],
+      .child(h_flex().flex_none().px(16).py(12).justify_end().gap(8).border_t(1).border_color(t.border)
+        .child(button(t, "confirm-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+        .when(Boolean(ok), (el) => el.child(button(t, "confirm-yes", this.busy ? "Working…" : VERB[action],
           action === "delete" ? "danger" : "primary", (_e, cx) => this.confirm(cx)))));
   }
 }
@@ -1172,20 +1257,19 @@ class Archived {
   render(cx) {
     const t = theme();
     const ref = (task) => ({ board: this.ref.board, db: this.ref.db, id: task.id });
-    const small = (id, text, onClick) => h_flex().id(id).h(24).px(8).flex_none().items_center().rounded(6).text_size(12)
-      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .on_click((_e, cx) => { cx.stop_propagation(); onClick(); }).child(text);
+    // A row's own buttons must not also open the task.
+    const rowButton = (id, text, kind, icon, onClick) => button(t, id, text, kind, (_e, cx) => { cx.stop_propagation(); onClick(); }, icon);
     const tasks = this.tasks ?? [];
-    const row = (task, i) => h_flex().id(`archived-${task.id}`).flex_none().p(10).gap(8).items_center().rounded(8)
-      .border(1).border_color(i === this.at ? t.accent : t.border).bg(t.background).hover((s) => s.bg(t.hover))
+    const row = (task, i) => h_flex().id(`archived-${task.id}`).flex_none().px(8).py(9).gap(12).items_center().rounded(6)
+      .border_b(1).border_color(t.border).when(i === this.at, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_click(() => openDetails(ref(task)))
-      .child(v_flex().flex_1().min_w(0).gap(3)
-        .child(div().truncate().text_size(13).text_color(t.foreground).child(task.title))
-        .child(div().truncate().text_size(11.5).text_color(t.dim)
-          .child([task.assignee || "Unassigned", task.spec, task.id].filter(Boolean).join(" · "))))
-      .child(small(`restore-${task.id}`, "Restore…", () => openConfirm("restore", ref(task))))
-      .child(small(`delete-${task.id}`, "Delete…", () => openConfirm("delete", ref(task))));
-    return v_flex().id("shepherd-archived").track_focus(this.handle).size_full().bg(t.popover)
+      .child(div().w(84).flex_none().font_family(MONO).text_size(11.5).text_color(t.muted).child(task.id))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(t.foreground).child(task.title))
+      .when(Boolean(task.spec), (el) => el.child(chip(t, task.spec)))
+      .child(div().flex_none().max_w(110).truncate().text_size(12).text_color(task.assignee ? t.muted : t.dim).child(task.assignee || "Unassigned"))
+      .child(rowButton(`restore-${task.id}`, "Restore…", null, "restore", () => openConfirm("restore", ref(task))))
+      .child(rowButton(`delete-${task.id}`, "Delete…", "danger", null, () => openConfirm("delete", ref(task))));
+    return v_flex().id("shepherd-archived").track_focus(this.handle).size_full().bg(t.canvas)
       .on_key_down((e, cx) => {
         const task = tasks[Math.min(this.at, tasks.length - 1)];
         if (e.key === "down" || e.key === "up") this.at = Math.max(0, Math.min(tasks.length - 1, this.at + (e.key === "down" ? 1 : -1)));
@@ -1196,15 +1280,17 @@ class Archived {
         else return;
         cx.stop_propagation(); cx.notify();
       })
-      .child(h_flex().flex_none().px(14).py(10).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(v_flex().flex_1().min_w(0).gap(2)
-          .child(div().text_size(14).font_semibold().text_color(t.foreground).child(`Archived tasks · ${this.ref.name}`))
-          .child(div().text_size(11.5).text_color(t.dim).child("Click or Enter reads a task. Restore (r) returns it to Triage; Delete (d) removes it for good.")))
-        .child(small("archived-close", "Close", () => closeOverlay(props().overlay))))
-      .child(v_flex().id("archived-list").flex_1().min_h(0).p(12).gap(8).overflow_y_scrollbar()
+      .child(titleBar(t, "archived", [
+        div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Archived tasks"),
+        div().flex_none().font_family(MONO).text_size(12).text_color(t.muted).child(this.ref.name),
+        div().flex_none().px(5).rounded(4).bg(t.raised).font_family(MONO).text_size(11).text_color(t.muted).child(String(tasks.length)),
+      ], () => closeOverlay(props().overlay)))
+      .child(v_flex().id("archived-list").flex_1().min_h(0).px(8).py(6).overflow_y_scrollbar()
         .when(Boolean(this.error), (el) => el.child(errorBox(t, `Cannot read archived tasks. ${this.error}`)))
-        .when(Boolean(this.tasks && !this.tasks.length), (el) => el.child(div().text_size(12.5).text_color(t.muted).child("No archived tasks on this board.")))
-        .children(tasks.map(row)));
+        .when(Boolean(this.tasks && !this.tasks.length), (el) => el.child(div().p(8).text_size(13).text_color(t.muted).child("No archived tasks on this board.")))
+        .children(tasks.map(row)))
+      .child(h_flex().flex_none().px(16).py(10).gap(8).items_center().border_t(1).border_color(t.border).text_size(12).text_color(t.muted)
+        .child("Click or Enter reads a task. Restore (r) returns it to Triage; Delete (d) removes it for good."));
   }
 }
 
@@ -1307,21 +1393,23 @@ class ShepherdPanel {
     const later = using && using !== profile ? ` Settings say \`${profile}\`; it applies at the next start or Restart.` : "";
     const [text, action] = {
       checking: [`Starting Hermes (\`${profile}\`)…`], launching: [`Starting Hermes (\`${profile}\`)…`],
-      running: [`Running \`hermes -p ${using ?? profile}\`.${later}${this.profileError ? ` Cannot write the profile file: ${this.profileError}` : ""}`],
+      running: [`Running.${later}${this.profileError ? ` Cannot write the profile file: ${this.profileError}` : ""}`],
       exited: [`Hermes (\`${using ?? profile}\`) exited with code ${status.code}${why}.${later}`, "Restart"],
       gone: ["The Shepherd terminal is gone.", "Start again"],
       failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
     }[status.kind];
-    const button = (id, label, onClick, solid) => h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).text_size(12)
-      .bg(solid ? t.solid : t.chrome).text_color(solid ? t.solid_foreground : t.muted)
-      .hover((s) => solid ? s.opacity(0.85) : s.bg(t.hover).text_color(t.foreground))
+    const small = (id, label, onClick, primary) => h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).text_size(12)
+      .border_1().border_color(primary ? t.accent : t.input).when(primary, (el) => el.bg(t.accent).font_semibold())
+      .text_color(primary ? t.accent_foreground : t.foreground)
+      .hover((s) => primary ? s.opacity(0.88) : s.bg(t.hover))
       .on_click((_e, cx) => { onClick(cx); cx.notify(); }).child(label);
     return h_flex().id("shepherd-panel").size_full().px(10).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .child(svg(`mods/${MOD}/coordinator.svg`).size(14).flex_none().text_color(t.muted))
-      .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child("Shepherd"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(action ? t.blocked : t.dim)
+      .child(logo(20))
+      .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Shepherd"))
+      .child(div().flex_none().px(6).rounded(4).bg(t.raised).font_family(MONO).text_size(11).text_color(t.muted).child(using ?? profile))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(action ? t.blocked : t.muted)
         .child(findNode(layout(), PANEL_BLOCK) ? text : `${text} Add the "${PANEL_BLOCK}" block back to your layout (see the README).`))
-      .when(Boolean(action), (el) => el.child(button("shepherd-restart", action, (cx) => this.restart(status, cx), true)))
-      .child(button("shepherd-hide", "Hide", () => run("layout.hide", { id: PANEL }), false));
+      .when(Boolean(action), (el) => el.child(small("shepherd-restart", action, (cx) => this.restart(status, cx), true)))
+      .child(small("shepherd-hide", "Hide", () => run("layout.hide", { id: PANEL }), false));
   }
 }

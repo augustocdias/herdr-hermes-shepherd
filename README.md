@@ -83,7 +83,7 @@ The Cron jobs button at the top right lists the cron jobs of every Hermes profil
 
 ### Records and rules
 
-The Settings button at the top right edits the panel's Hermes profile, an ordered list of rules and the name of the records tab, all shared by every Shepherd tab in every space. The records tab is called Links until you name it otherwise; the name cannot be empty. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks the profile and every rule first and saves nothing while one has a problem. Esc, Close or ✕ with unsaved changes asks before discarding them.
+The Settings button at the top right edits the panel's Hermes profile, an ordered list of rules and the name of the records tab, all shared by every Shepherd tab in every space. The records tab is called Links until you name it otherwise; the name cannot be empty. Each rule has a regex, a command, a description and an Open in new tab switch, which new rules start with on. Save checks the profile and every rule first and saves nothing while one has a problem. Esc, Close or ✕ with unsaved changes asks before discarding them.
 
 - The regex is a Python regular expression. In the command and the description, `$1`, `$2` and so on insert capture groups, `$0` the whole match, and `$$` a dollar sign.
 - The command is split into arguments the way a shell would, with quotes and backslashes, before the captures go in. A capture is always literal text inside one argument, whatever quotes, spaces or `$(…)` it holds.
@@ -103,7 +103,7 @@ Matching runs in the background, in a separate process, so the dialog stays usab
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
 - A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). The board and cron list need no Hermes gateway, profile, or plugin.
 - For the Shepherd panel: `hermes`, `hc` and `sh` on the PATH Herdr Core runs with, the Hermes profile Settings names (`coordinator` by default), and the panel's block in your layout.
-- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Cron jobs, Settings, Show archived and Shepherd buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel works as usual through its Hide button, `layout.toggle` and a key binding, but there is no way to list cron jobs, edit record rules, or list, restore or delete archived tasks.
+- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Cron jobs, Settings, Show archived and Shepherd buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel works as usual through its Hide button, `layout.toggle` and a key binding, but there is no way to list cron jobs or to list, restore or delete archived tasks. Settings still opens from Edit rules in a task's records tab.
 
 Record commands and the Shepherd terminal run through Herdr Core, like any terminal you open yourself. Shepherd adds no sandbox. Any jail or approval comes from your own wrappers on the PATH Herdr Core runs with, such as a `hermes` wrapper or the programs your rules name.
 
