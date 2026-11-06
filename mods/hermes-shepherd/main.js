@@ -73,15 +73,18 @@ const writeProfile = async (profile) => {
   try { current = await readTextFile(profileFile()); } catch {}
   if (current !== profile) await writeTextFile(profileFile(), profile, current);
 };
-// $1 is the profile file; the rest is the hermes command. The profile is one argument after -p, never parsed by the shell.
+// $1 is the profile file; the rest is the hermes command. The profile is one argument after -p; the shell does not parse it.
 const RUNNER = `trap : INT QUIT
 file=$1; shift
 while :; do
   profile=$(cat "$file" 2>/dev/null); [ -n "$profile" ] || profile=${PROFILE}
   hc label "$HC_TERMINAL_ID" ${EXIT}= ${RUNNING_PROFILE}="$profile" >/dev/null 2>&1
   "$@" -p "$profile"; code=$?
+  # A crashed TUI can leave raw mode on, where Enter never ends \`read\`.
+  stty sane 2>/dev/null
   # Drop keys typed while Hermes ran, so only a new Enter starts it again; the label then offers Restart.
-  while read -r -t 1 _ 2>/dev/null; do :; done
+  # dash has no \`read -t\`, so read without blocking through stty.
+  old=$(stty -g 2>/dev/null) && { stty -icanon min 0 time 0; cat >/dev/null; stty "$old"; }
   hc label "$HC_TERMINAL_ID" ${EXIT}=$code >/dev/null 2>&1
   printf '\\n[Hermes exited with code %s. Press Enter, or Restart in the Shepherd panel, to start it again.]\\n' "$code"
   until read -r _; do sleep 1; done
@@ -857,9 +860,9 @@ class SessionSettings {
         if (this.closed) return; // discarded while the check ran
         if (JSON.stringify(this.current()) !== JSON.stringify(settings)) { this.notice = "Not saved: the settings changed while they were checked. Save again."; return; }
         setShared(RULES, settings);
+        this.clean = JSON.stringify(settings);
         // The panel's runner reads the file at its next start; a failed write is reported, the setting is kept.
         try { await writeProfile(settings.profile); } catch (e) { this.notice = `Saved, but the panel cannot read the new profile yet: ${e?.message ?? e}`; return; }
-        this.clean = JSON.stringify(settings);
         this.malformed = null; this.notice = "Saved.";
       } catch (e) { this.notice = `Not saved: ${e?.message ?? e}`; }
       finally { this.saving = false; cx.notify(); }
@@ -1252,7 +1255,9 @@ class ShepherdPanel {
     this.phase = "launching";
     cx.spawn(async (cx) => {
       try {
-        await writeProfile(savedRules().profile);
+        // Without the file the runner falls back to the default profile, so start anyway and say so.
+        this.profileError = "";
+        try { await writeProfile(savedRules().profile); } catch (e) { this.profileError = e?.message ?? String(e); }
         let result;
         try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", PANEL_TERMINAL, "--cwd", home(),
           "--", "sh", "-c", RUNNER, PANEL_TERMINAL, profileFile(), "hermes"]); }
@@ -1297,7 +1302,7 @@ class ShepherdPanel {
     const later = using && using !== profile ? ` Settings say \`${profile}\`; it applies at the next start or Restart.` : "";
     const [text, action] = {
       checking: [`Starting Hermes (\`${profile}\`)…`], launching: [`Starting Hermes (\`${profile}\`)…`],
-      running: [`Running \`hermes -p ${using ?? profile}\`.${later}`],
+      running: [`Running \`hermes -p ${using ?? profile}\`.${later}${this.profileError ? ` Cannot write the profile file: ${this.profileError}` : ""}`],
       exited: [`Hermes (\`${using ?? profile}\`) exited with code ${status.code}${why}.${later}`, "Restart"],
       gone: ["The Shepherd terminal is gone.", "Start again"],
       failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
