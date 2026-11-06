@@ -31,7 +31,7 @@ Every card's menu also offers Archive, which asks first. The confirmation lists 
 
 Archiving keeps the description, comments, runs and history. Hermes's own `hermes kanban gc` may later delete old events of archived tasks.
 
-Show archived, at the top right, lists the board's archived tasks. Click one to read its details. Restore moves it back to Triage, never to its old column, after a confirmation, so its description can be edited again. A restored task counts as unfinished again, so Hermes moves its descendants that are Ready, Running, Review or Done back to Todo and stops their running workers. Delete removes an archived task, its comments, runs, history and links for good, through Hermes's archived-only delete. It asks first, and Enter does not confirm it.
+Show archived, at the top right, lists the board's archived tasks. If the board has not loaded, it says why instead. Click one to read its details. Restore moves it back to Triage, never to its old column, after a confirmation, so its description can be edited again. A restored task counts as unfinished again, so Hermes moves its descendants that are Ready, Running, Review or Done back to Todo and stops their running workers. Delete removes an archived task, its comments, runs, history and links for good, through Hermes's archived-only delete. It asks first, and Enter does not confirm it.
 
 Each action sends the status the task had when you chose it. If the task changed since, nothing happens and the menu or confirmation shows the task as it is now. Hermes cannot make that check and the change one transaction, so a change landing in the instant between them is not caught.
 
@@ -64,6 +64,10 @@ A task's records tab lists what the rules find in its description, result, comme
 
 Clicking a record starts its command again every time. Shepherd never reuses or focuses a running one. It runs the command through Herdr Core in the folder of the selected space, as `env -- <command>`, without a shell. Without `env`, `hc run` would treat a single argument with spaces or shell characters as a shell line, and a first word naming an hc template as that template. With Open in new tab checked, the command opens in a new tab of the selected space. Otherwise it runs in the background, where `hc ls` and `hc read` show it. If the program is missing or exits within a second, the record shows its exit code and last lines.
 
+Shepherd refuses to start a record when a capture in its command starts with `-`, and the record says so. Hermes agents write the task text, so a capture such as `--output=/home/you/.bashrc` would otherwise reach the program as an option. A capture is checked wherever the command uses it, also inside a longer argument. Captures that only go into the description are not checked.
+
+In the records tab, ← and → switch between Details and the records, ↑ and ↓ select a record, and Enter starts it. In Settings, the keys act on the outlined rule. Clicking a rule, typing in it, adding one, or ↑ and ↓ outline it, and Enter edits it. Alt+Shift+↑ and Alt+Shift+↓ move it, Alt+T toggles Open in new tab, and Alt+Shift+Backspace removes it; these work while you type in the rule too.
+
 Matching runs in the background, in a separate process, so the dialog stays usable while it runs. Matching a task is stopped after 3 seconds. The rule that spent most of that time is marked as timed out, and the other rules are matched again without it. A timed-out rule therefore finds nothing in that task, and text it might have claimed goes to the rule that wins without it. When no rule spent most of the time, the tab says the task is too large for the rules and names none. Retries stop after 15 seconds in all, and nothing keeps running after matching is stopped. The tab matches again only when the rules or the task's own text change. Saved settings that are not a valid name and rule list are left as they are: the records tab uses no rules, and Settings shows the saved value until Save replaces it.
 
 ## Requirements
@@ -71,6 +75,9 @@ Matching runs in the background, in a separate process, so the dialog stays usab
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
 - A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). The board and cron list need no Hermes gateway, profile, or plugin.
 - For the coordinator: `hermes` on the PATH Herdr Core runs with, and a Hermes profile named `coordinator`.
+- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Coordinator, Cron jobs, Settings and Show archived controls. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, but there is no way to hide the coordinator, list cron jobs, edit record rules, or list, restore or delete archived tasks.
+
+Record commands and the coordinator run through Herdr Core, like any terminal you open yourself. Shepherd adds no sandbox. Any jail or approval comes from your own wrappers on the PATH Herdr Core runs with, such as a `hermes` wrapper or the programs your rules name.
 
 ## Install with Home Manager
 
@@ -113,7 +120,7 @@ herdr-app do tab.new --mod hermes-shepherd --name "Side work"
 
 ### Pin it with Smart Tabs
 
-[herdr-navigation](https://github.com/augustocdias/herdr-navigation)'s Smart Tabs can open a Shepherd tab in every space. Pinning is your configuration, not part of this mod:
+herdr-navigation's Smart Tabs can open a Shepherd tab in every space. Pinning is your configuration, not part of this mod:
 
 ```nix
 programs.herdr-navigation.pinnedTabs = [

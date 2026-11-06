@@ -104,6 +104,29 @@ with connect_closing() as c:
         _, named = self.helper("default")
         self.assertEqual((named["board"], named["matched"]), ("default", True))
 
+    def test_a_board_name_after_the_separator_may_look_like_a_flag(self):
+        self.native("""
+kb.create_board("flag", name="--match")
+with connect_closing(board="flag") as c:
+    kb.create_task(c, title="Flag-named task")
+""")
+        # Hermes slugs cannot start with "-", but display names can.
+        for name in ("--match", "--MATCH"):
+            code, shown = self.helper("--", name)
+            self.assertEqual(code, 0, shown)
+            self.assertEqual((shown["board"], shown["matched"]), ("flag", True))
+            self.assertEqual([t["title"] for t in shown["tasks"]], ["Flag-named task"])
+
+    def test_unknown_flags_and_wrong_argument_counts_are_errors(self):
+        self.native("with connect_closing() as c:\n    kb.create_task(c, title='Task')")
+        for args in (("--act", "default", "t_x", "archive"), ("--task", "default"), ("--archived",),
+                     ("--check-rules",), ("--edit", "default", "t_x", "v"), ("--sessions", "default", "t_x"),
+                     ("--bogus",), ("-x",), ("--match", "extra"), ("--",), ("--", "a", "b"), ("a", "b")):
+            code, reply = self.helper(*args)
+            self.assertEqual(code, 1, (args, reply))
+            self.assertIn("error", reply, args)
+            self.assertNotIn("tasks", reply, args)
+
 
 class TaskDetailsAndEditing(unittest.TestCase):
     setUp, tearDown = BoardSnapshot.setUp, BoardSnapshot.tearDown

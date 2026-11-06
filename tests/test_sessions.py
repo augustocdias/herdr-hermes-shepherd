@@ -72,6 +72,21 @@ class SessionRecords(unittest.TestCase):
         self.assertEqual(record["argv"], ["printf", "%s|", f"pre {payload} post", payload, "$1", "$"])
         self.assertEqual(record["description"], f"Run {payload} for $5")
 
+    def test_a_capture_that_starts_with_a_dash_refuses_the_record(self):
+        task = self.task("commit: --output=/tmp/x and commit: abc123 and ref: a-b and tag: -v")
+        reply = self.sessions(task, [
+            rule(r"commit: (\S+)", "git show $1", "Commit $1"),
+            rule(r"ref: (\S+)", "git show --stat=$1"),
+            rule(r"tag: (\S+)", "echo tag", "Tag $1"),
+        ])
+        self.assertEqual(reply["errors"], [])
+        records = {r["description"]: r for r in reply["records"]}
+        self.assertEqual(records["Commit --output=/tmp/x"]["argv"], ["git", "show", "--output=/tmp/x"])
+        self.assertIn("starts with “-”", records["Commit --output=/tmp/x"]["refused"])
+        # Safe captures, a dash inside a capture, and a dashed capture used only in the description all run.
+        for name in ("Commit abc123", "ref: a-b", "Tag -v"):
+            self.assertNotIn("refused", records[name], name)
+
     def test_invalid_rules_report_errors_and_resolve_nothing(self):
         task = self.task("ticket 7 and other 8")
         rules = [

@@ -1,21 +1,23 @@
 """Read and change one Hermes kanban board for the Hermes Shepherd mod. Prints JSON.
 
 Usage:
-  hermes-shepherd-board [NAME]                         the board's tasks
+  hermes-shepherd-board [-- NAME]                      the board's tasks
   hermes-shepherd-board --archived BOARD               the board's archived tasks
   hermes-shepherd-board --task BOARD ID                one task's details and history
   hermes-shepherd-board --edit BOARD ID VERSION BODY   replace the task's description
-  hermes-shepherd-board --sessions BOARD ID RULES      session records in the task's text
-  hermes-shepherd-board --check-rules RULES            problems in the session rules
+  hermes-shepherd-board --sessions BOARD ID RULES      records the rules find in the task's text
+  hermes-shepherd-board --check-rules RULES            problems in the record rules
   hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, archive, restore or delete
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
-name). Without a match, or without NAME, it reads Hermes's `default` board and
-reports `matched: false`. BOARD is a board slug. VERSION is the `version` that
+name). It follows `--`, so a tab named like a flag still names a board; a NAME that does
+not start with `-` may also come alone. Without a match, or without NAME, it reads Hermes's
+`default` board and reports `matched: false`. An unknown flag, or a flag with the wrong
+number of arguments, exits 1 with an `error`. BOARD is a board slug. VERSION is the `version` that
 `--task` printed when the editor opened; a description changed since then is not
 overwritten. STATUS is the task's status when the person chose ACTION; a task that has
 changed since is left alone. `--edit` and `--act` exit 2 when they refuse, with the task's
-current details. RULES is the JSON list of session rules (see `extract`); matching runs
+current details. RULES is the JSON list of record rules (see `extract`); matching runs
 in a child process that is stopped after MATCH_SECONDS (see `bounded`), so a pathological regex cannot hang.
 
 Run it with the Python interpreter of the Hermes installation, so the native
@@ -229,15 +231,19 @@ def compile_rules(rules):
 
 
 def extract(rules, texts, progress=lambda i: None, skip=()):
-    """Session records in `texts`, in order of appearance, and the rules' errors.
+    """Records the rules find in `texts`, in order of appearance, and the rules' errors.
 
     Each text is scanned left to right. At each occurrence the earliest match wins, and
     among matches starting at the same place the first rule in the list. Scanning goes on
     after the match. A record repeating an earlier command and description is dropped.
     Rules whose index is in `skip` take no part, as if they were not in the list.
+    A record whose command takes a capture that starts with `-` carries `refused`: task text,
+    which agents write, must not add options to the command, so the mod will not start it.
     """
     compiled, errors = compile_rules(rules)
     usable = [(i, c) for i, c in enumerate(compiled) if c and i not in skip]
+    # The capture groups each rule's command takes.
+    uses = {i: {int(n) for arg in c[1] for n in REFERENCE.findall(arg) if n != "$"} for i, c in usable}
     records, seen = [], set()
     for text in texts:
         pos, ahead = 0, {}
@@ -266,6 +272,10 @@ def extract(rules, texts, progress=lambda i: None, skip=()):
                 if error not in errors:
                     errors.append(error)
                 continue
+            dashed = next((n for n in sorted(uses[i]) if (groups[n] or "").startswith("-")), None)
+            if dashed is not None:
+                record["refused"] = (f"Not started: capture ${dashed} is “{groups[dashed][:80]}”, which starts with “-”, "
+                                     "so the program could read it as an option. Task text never adds options to a command.")
             key = (record["description"], tuple(record["argv"]))
             if key not in seen:
                 seen.add(key)
@@ -342,6 +352,8 @@ def match():
         print(json.dumps(extract(rules, texts, progress=progress, skip=set(skip))))
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))
+
+
 def archived(board):
     kb, _, _ = hermes()
     path, connection = open_board(board)
@@ -397,25 +409,37 @@ def act(board, task_id, action, expected):
                 "task": details(conn, task_id) if after else None}
 
 
+# Each flag and the number of arguments after it.
+COMMANDS = {
+    "--task": (2, task_details),
+    "--edit": (4, edit_description),
+    "--sessions": (3, sessions),
+    "--check-rules": (1, lambda rules: {"errors": compile_rules(json.loads(rules))[1]}),
+    "--archived": (1, archived),
+    "--act": (4, act),
+}
+
+
 def main():
     args = sys.argv[1:]
     if args == ["--match"]:
         return match()
     try:
-        if args[:1] == ["--task"] and len(args) == 3:
-            reply = task_details(*args[1:])
-        elif args[:1] == ["--edit"] and len(args) == 5:
-            reply = edit_description(*args[1:])
-        elif args[:1] == ["--sessions"] and len(args) == 4:
-            reply = sessions(*args[1:])
-        elif args[:1] == ["--check-rules"] and len(args) == 2:
-            reply = {"errors": compile_rules(json.loads(args[1]))[1]}
-        elif args[:1] == ["--archived"] and len(args) == 2:
-            reply = archived(args[1])
-        elif args[:1] == ["--act"] and len(args) == 5:
-            reply = act(*args[1:])
+        if args[:1] == ["--"]:
+            if len(args) != 2:
+                raise ValueError(f"-- takes one board name, not {len(args) - 1} arguments.")
+            reply = snapshot(args[1])
+        elif args[:1] and args[0] in COMMANDS:
+            count, command = COMMANDS[args[0]]
+            if len(args) - 1 != count:
+                raise ValueError(f"{args[0]} takes {count} argument{'s' * (count != 1)}, not {len(args) - 1}.")
+            reply = command(*args[1:])
+        elif args[:1] and args[0].startswith("-"):
+            raise ValueError(f"Unknown flag {args[0]}. Pass a board name after --.")
+        elif len(args) > 1:
+            raise ValueError(f"Expected one board name, not {len(args)} arguments.")
         else:
-            reply = snapshot(*args[:1])
+            reply = snapshot(*args)
         print(json.dumps(reply))
     except Refused as exc:
         print(json.dumps({"error": str(exc), "task": exc.task}))
