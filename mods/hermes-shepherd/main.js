@@ -110,6 +110,8 @@ const CONTROLS = [
       // The toast shows one line, so the board's banner carries the error itself.
       : notify({ title: "Cannot show archived tasks", level: "error",
         body: view.error ? "The board did not load; see it, then Retry." : "The board is still loading; try again." }) },
+  // Last, so it sits rightmost. Stateless and unchecked: without the panel in the layout, Herdr warns on its own.
+  { id: "shepherd", label: "Shepherd", icon: `mods/${MOD}/coordinator.svg`, run: () => run("layout.toggle", { id: PANEL }) },
 ];
 const publishControls = () => {
   const list = CONTROLS.map(({ id, label, icon }) => ({ id, label, icon, command: `${MOD}.${id}` }));

@@ -59,7 +59,7 @@ herdr-app do layout.clone '{"name":"main","as":"my-layout"}'
 
 Keep the ids `shepherd` and `shepherd-terminal` and the terminal name `hermes-shepherd`; the panel's header finds its terminal and hides the panel by them. Change the width, the limits or the place freely.
 
-Showing and hiding the panel belongs to your layout, as it does for Files and Changes; Shepherd works the same whether or not your layout has the panel. Once shown, the panel stays beside every tab in every space, so you can talk to the coordinator from anywhere. The panel's own Hide button hides it, and `herdr-app do layout.toggle --id shepherd` shows or hides it. To toggle it with a key from any tab, also while a terminal has focus, add a binding to the `global` section of Herdr App's `keys.json`:
+Showing and hiding the panel belongs to your layout, as it does for Files and Changes; Shepherd works the same whether or not your layout has the panel. Once shown, the panel stays beside every tab in every space, so you can talk to the coordinator from anywhere. The Shepherd button, rightmost at the top right of a Shepherd tab, shows and hides it, as do `herdr-app do layout.toggle --id shepherd` and the panel's own Hide button. Shepherd does not check whether your layout has the panel; without it, Herdr App reports the missing node itself. To toggle it with a key from any tab, also while a terminal has focus, add a binding to the `global` section of Herdr App's `keys.json`:
 
 ```json
 "ctrl-shift-y": "layout.toggle:shepherd"
@@ -103,7 +103,7 @@ Matching runs in the background, in a separate process, so the dialog stays usab
 - Herdr App. Development checks used Herdr App 0.1.11 and Core 0.1.18 on Linux.
 - A Hermes installation whose Python can import `hermes_cli`. The tab reads the Hermes home that Herdr App's environment selects (`HERMES_HOME`, else `~/.hermes`). The board and cron list need no Hermes gateway, profile, or plugin.
 - For the Shepherd panel: `hermes`, `hc` and `sh` on the PATH Herdr Core runs with, the Hermes profile Settings names (`coordinator` by default), and the panel's block in your layout.
-- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Cron jobs, Settings and Show archived buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel works as usual, but there is no way to list cron jobs, edit record rules, or list, restore or delete archived tasks.
+- [herdr-navigation](https://github.com/augustocdias/herdr-navigation) for the Cron jobs, Settings, Show archived and Shepherd buttons. They exist only as its `tab-controls` at the top right of the tab bar, and the board's own toolbar does not repeat them. Without herdr-navigation the board still shows and edits tasks, and the panel works as usual through its Hide button, `layout.toggle` and a key binding, but there is no way to list cron jobs, edit record rules, or list, restore or delete archived tasks.
 
 Record commands and the Shepherd terminal run through Herdr Core, like any terminal you open yourself. Shepherd adds no sandbox. Any jail or approval comes from your own wrappers on the PATH Herdr Core runs with, such as a `hermes` wrapper or the programs your rules name.
 
