@@ -16,7 +16,7 @@ reports `matched: false`. BOARD is a board slug. VERSION is the `version` that
 overwritten. STATUS is the task's status when the person chose ACTION; a task that has
 changed since is left alone. `--edit` and `--act` exit 2 when they refuse, with the task's
 current details. RULES is the JSON list of session rules (see `extract`); matching runs
-in a child process that is stopped after MATCH_SECONDS, so a pathological regex cannot hang.
+in a child process that is stopped after MATCH_SECONDS (see `bounded`), so a pathological regex cannot hang.
 
 Run it with the Python interpreter of the Hermes installation, so the native
 `hermes_cli` modules resolve the same HERMES_HOME, board and workflow as the
@@ -27,9 +27,11 @@ command does. Every write goes through Hermes's own task functions.
 import hashlib
 import json
 import re
+import resource
 import shlex
 import subprocess
 import sys
+import time
 
 
 class Refused(Exception):
@@ -176,6 +178,7 @@ def edit_description(board, task_id, expected, body):
 
 
 MATCH_SECONDS = 3
+MATCH_TOTAL_SECONDS = 15  # retries without timed-out rules stop here, so a scan stays bounded
 REFERENCE = re.compile(r"\$(\$|\d+)")  # $N is capture group N ($0: the whole match); $$ is a literal $
 
 
@@ -199,7 +202,7 @@ def compile_rules(rules):
     fields = {"regex": str, "command": str, "description": str, "tab": bool}
     if not isinstance(rules, list) or not all(
             isinstance(r, dict) and all(isinstance(r.get(k), t) for k, t in fields.items()) for r in rules):
-        raise ValueError("Session rules must be a list of {regex, command, description, tab} entries.")
+        raise ValueError("Rules must be a list of {regex, command, description, tab} entries.")
     compiled, errors = [], []
     for i, r in enumerate(rules):
         try:
@@ -225,15 +228,16 @@ def compile_rules(rules):
     return compiled, errors
 
 
-def extract(rules, texts, progress=lambda i: None):
+def extract(rules, texts, progress=lambda i: None, skip=()):
     """Session records in `texts`, in order of appearance, and the rules' errors.
 
     Each text is scanned left to right. At each occurrence the earliest match wins, and
     among matches starting at the same place the first rule in the list. Scanning goes on
     after the match. A record repeating an earlier command and description is dropped.
+    Rules whose index is in `skip` take no part, as if they were not in the list.
     """
     compiled, errors = compile_rules(rules)
-    usable = [(i, c) for i, c in enumerate(compiled) if c]
+    usable = [(i, c) for i, c in enumerate(compiled) if c and i not in skip]
     records, seen = [], set()
     for text in texts:
         pos, ahead = 0, {}
@@ -270,22 +274,52 @@ def extract(rules, texts, progress=lambda i: None):
 
 
 def bounded(rules, texts):
-    """`extract` in a child process that is killed after MATCH_SECONDS."""
-    try:
-        done = subprocess.run([sys.executable, "-I", __file__, "--match"], input=json.dumps([rules, texts]),
-                              capture_output=True, text=True, timeout=MATCH_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        searching = (exc.stderr or b"").decode().split()
-        culprit = f" in rule {int(searching[-1]) + 1}" if searching else ""
-        raise RuntimeError(f"Matching took longer than {MATCH_SECONDS} s and was stopped{culprit}. Its regex "
-                           "probably backtracks catastrophically on this text; rewrite it, for example "
-                           "with possessive quantifiers (a++) or atomic groups.") from None
-    if done.returncode != 0:
-        raise RuntimeError(f"Matching failed with exit code {done.returncode}: {done.stderr.strip()[-500:]}")
-    reply = json.loads(done.stdout)
-    if "error" in reply:
-        raise ValueError(reply["error"])
-    return reply
+    """`extract` in a child process that is killed after MATCH_SECONDS.
+
+    On a timeout, the rule that spent most of that time searching is marked timed out
+    and left out, and the others are matched again without it, so a slow rule never hides
+    the other rules' records. Leaving it out entirely keeps precedence exact among the
+    rules that finished: text it might have claimed goes to the rule that wins without it.
+    When no rule spent most of the time, the scan as a whole is too slow and no rule is
+    blamed. Retries stop after MATCH_TOTAL_SECONDS.
+    """
+    skip, stopped = [], []
+    deadline = time.monotonic() + MATCH_TOTAL_SECONDS
+    while True:
+        try:
+            done = subprocess.run([sys.executable, "-I", __file__, "--match"], input=json.dumps([rules, texts, skip]),
+                                  capture_output=True, text=True, timeout=MATCH_SECONDS)
+        except subprocess.TimeoutExpired as exc:  # subprocess.run kills the child before raising
+            spent = time_per_rule((exc.stderr or b"").decode(), time.monotonic())
+            i = max(spent, key=spent.get) if spent else None
+            if i is None or spent[i] < MATCH_SECONDS / 2:
+                raise RuntimeError(f"Matching this task took longer than {MATCH_SECONDS} s with no single rule to blame, "
+                                   "so it was stopped. The task is too large for these rules.") from None
+            skip.append(i)
+            stopped.append({"rule": i, "error": f"Rule {i + 1} timed out: it spent more than {spent[i]:.1f} s on this "
+                            "task, so it was stopped and finds nothing here; the other rules were matched without it. "
+                            "Its regex probably backtracks catastrophically on this text; rewrite it, for example with "
+                            "possessive quantifiers (a++) or atomic groups."})
+            if time.monotonic() + MATCH_SECONDS > deadline:
+                raise RuntimeError(f"Matching stopped after {MATCH_TOTAL_SECONDS} s: rules "
+                                   f"{', '.join(str(r + 1) for r in skip)} timed out on this task.") from None
+            continue
+        if done.returncode != 0:
+            raise RuntimeError(f"Matching failed with exit code {done.returncode}: {done.stderr.strip()[-500:]}")
+        reply = json.loads(done.stdout)
+        if "error" in reply:
+            raise ValueError(reply["error"])
+        reply["errors"] += stopped
+        reply["timed_out"] = skip
+        return reply
+
+
+def time_per_rule(progress, now):
+    """Seconds each rule searched, from a stopped child's progress lines ("rule start")."""
+    spent, lines = {}, [line.split() for line in progress.splitlines() if line.strip()]
+    for (rule, start), (_, end) in zip(lines, [*lines[1:], (None, now)]):
+        spent[int(rule)] = spent.get(int(rule), 0) + float(end) - float(start)
+    return spent
 
 
 def sessions(board, task_id, rules):
@@ -296,12 +330,16 @@ def sessions(board, task_id, rules):
 
 
 def match():
-    """The child side of `bounded`: reports each rule before searching with it, so a timeout names it."""
+    """The child side of `bounded`: reports each rule and the time before searching with it, so a timeout names the slowest."""
+    # A child whose parent died is not killed by the timeout, so the kernel stops it instead.
+    resource.setrlimit(resource.RLIMIT_CPU, (2 * MATCH_SECONDS, 2 * MATCH_SECONDS))
+
     def progress(i):
-        sys.stderr.write(f"{i}\n")
+        sys.stderr.write(f"{i} {time.monotonic()}\n")
         sys.stderr.flush()
     try:
-        print(json.dumps(extract(*json.load(sys.stdin), progress=progress)))
+        rules, texts, skip = json.load(sys.stdin)
+        print(json.dumps(extract(rules, texts, progress=progress, skip=set(skip))))
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}))
 def archived(board):

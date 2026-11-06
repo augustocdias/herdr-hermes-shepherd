@@ -2,8 +2,22 @@
 import json
 import time
 import unittest
+from pathlib import Path
 
 from test_board import BoardSnapshot
+
+
+def matching_children():
+    """Matching processes still alive: a stopped rule must leave none behind."""
+    found = set()
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            args = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"--match" in args and any(a.endswith(b"hermes_shepherd_board.py") for a in args):
+            found.add(cmdline.parent.name)
+    return found
 
 
 def rule(regex, command, description="$0", tab=True):
@@ -82,13 +96,25 @@ class SessionRecords(unittest.TestCase):
             self.assertEqual(code, 1, reply)
             self.assertIn("error", reply)
 
-    def test_pathological_pattern_is_stopped_and_named(self):
-        task = self.task("a" * 40 + "!")
+    def test_pathological_rules_time_out_without_hiding_the_other_rules(self):
+        task = self.task("a" * 40 + "! then session X1", comments=["b" * 40 + "! and session Y2"])
+        rules = [
+            # Would win "session X1" by rule order, but it times out at the start of the text,
+            # so it is left out and rule 2 takes the occurrence.
+            rule(r"(a+)+$|session (\w+)", "omp $2"),
+            rule(r"session (\w+)", "attach $1", "Session $1"),
+            rule(r"(b+)+$", "true"),
+        ]
+        before = matching_children()
         started = time.monotonic()
-        code, reply = self.helper("--sessions", "default", task, json.dumps([rule("ok", "true"), rule(r"(a+)+$", "true")]))
-        self.assertLess(time.monotonic() - started, 15)
-        self.assertEqual(code, 1, reply)
-        self.assertIn("rule 2", reply["error"])
+        reply = self.sessions(task, rules)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual([(r["rule"], r["argv"]) for r in reply["records"]],
+                         [(1, ["attach", "X1"]), (1, ["attach", "Y2"])])
+        self.assertEqual(reply["timed_out"], [0, 2])
+        self.assertEqual([e["rule"] for e in reply["errors"]], [0, 2])
+        self.assertIn("Rule 1 timed out", reply["errors"][0]["error"])
+        self.assertEqual(matching_children() - before, set())
 
     def test_many_rules_over_large_content(self):
         # Built in the fixture process: a 200 KB body does not fit in one command-line argument.

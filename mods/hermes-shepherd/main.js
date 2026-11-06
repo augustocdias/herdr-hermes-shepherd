@@ -3,9 +3,9 @@
 // default board, and the toolbar says so. Repository and spec filters are global.
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
 // it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
-// with props { settings } it is the session rules dialog (SessionSettings). With props { actions },
-// { confirm } or { archived } it is a card's action menu, the confirmation of an archive, restore or
-// delete, or the archived-task list (ActionMenu, Confirm, Archived).
+// with props { settings } it is the Settings dialog for the record rules and the records tab name (SessionSettings).
+// With props { actions }, { confirm } or { archived } it is a card's action menu, the confirmation of an archive,
+// restore or delete, or the archived-task list (ActionMenu, Confirm, Archived).
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
@@ -504,19 +504,23 @@ export default class Shepherd extends View {
 const DRAFTS = "hermes-shepherd.drafts";
 
 // The popup's tabs; the tab row appears once there is more than one.
-const TABS = [{ key: "details", label: "Details" }, { key: "sessions", label: "Sessions" }];
+// A tab without a label shows the records tab name the user set in Settings.
+const TABS = [{ key: "details", label: "Details" }, { key: "sessions" }];
 
-// Session rules, global like the filters: { rules: [{ regex, command, description, tab }] }.
-// The helper matches them in a child process it stops after a few seconds, so no regex runs while rendering.
+// Record rules and the records tab's name, global like the filters: { name?, rules: [{ regex, command, description, tab }] }.
+// The helper matches the rules in a child process it stops after a few seconds, so no regex runs while rendering.
 const RULES = "hermes-shepherd.sessions";
+const TAB_NAME = "Links"; // the records tab's name until Settings saves another
 const RULE_FIELDS = { regex: "string", command: "string", description: "string", tab: "boolean" };
-// The saved rules, or { error, raw } when the saved value is not a rule list. Only Save in Settings replaces it.
+// { name, rules }, or { name, error, raw } when the saved value is malformed. Only Save in Settings replaces it.
 const savedRules = () => {
   const saved = shared(RULES);
-  if (saved == null) return { rules: [] };
+  if (saved == null) return { name: TAB_NAME, rules: [] };
   const rules = saved.rules;
-  if (Array.isArray(rules) && rules.every((r) => r && Object.entries(RULE_FIELDS).every(([k, type]) => typeof r[k] === type))) return { rules };
-  return { error: "The saved session rules are not a list of { regex, command, description, tab } entries, so none are used.",
+  const name = saved.name ?? TAB_NAME; // saved before the name was configurable
+  if (typeof name === "string" && name.trim() && Array.isArray(rules)
+    && rules.every((r) => r && Object.entries(RULE_FIELDS).every(([k, type]) => typeof r[k] === type))) return { name, rules };
+  return { name: TAB_NAME, error: "The saved settings are not a tab name and a list of { regex, command, description, tab } rules, so no rules are used.",
     raw: JSON.stringify(saved, null, 2) };
 };
 const RECORDS_SHOWN = 300; // rows per "Show more": thousands of rows at once make the dialog slow
@@ -557,7 +561,7 @@ class TaskDetails {
     this.handle.focus();
     this.tab = "details";
     this.task = null; this.error = ""; this.notice = ""; this.saving = false; this.open = true;
-    this.loads = 0; this.scan = null; this.launches = {}; this.shown = RECORDS_SHOWN; // Sessions tab: last scan, launch results by record, rows listed
+    this.scan = null; this.launches = {}; this.shown = RECORDS_SHOWN; // records tab: last scan, launch results by record, rows listed
     this.draft = null; this.base = null; // the editor's text state and the version it started from
     this.key = `${this.ref.board}:${this.ref.id}`;
     this.load(cx);
@@ -571,7 +575,7 @@ class TaskDetails {
       try {
         const { code, reply } = await call(["--task", this.ref.board, this.ref.id]);
         if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
-        this.task = reply; this.error = ""; this.loads++;
+        this.task = reply; this.error = "";
       } catch (e) { this.error = e?.message ?? String(e); }
       cx.notify();
     });
@@ -671,7 +675,7 @@ class TaskDetails {
       .children(TABS.map((tab) => h_flex().id(`details-tab-${tab.key}`).h(30).px(10).items_center().text_size(12.5)
         .border_b(2).border_color(tab.key === this.tab ? t.accent : t.popover)
         .text_color(tab.key === this.tab ? t.foreground : t.muted).hover((s) => s.text_color(t.foreground))
-        .on_click((_e, cx) => { this.tab = tab.key; cx.notify(); }).child(tab.label)));
+        .on_click((_e, cx) => { this.tab = tab.key; cx.notify(); }).child(tab.label ?? savedRules().name)));
 
     const banner = (text, color) => div().mt(10).p(10).rounded(7).border(1).border_color(color).bg(t.surface)
       .text_size(12).text_color(t.foreground).child(text);
@@ -718,9 +722,12 @@ class TaskDetails {
   }
 
   // Rescans when the rules or the task change; the helper reads the task itself and matches with a time limit.
+  // Only the child process evaluates regexes; this starts it and returns, and its reply arrives with a later render.
   scanSessions(cx) {
     const saved = savedRules();
-    const key = `${JSON.stringify(saved)}:${this.loads}`;
+    // Only this task's text: a board write elsewhere reloads the task, but must not start another scan.
+    const task = this.task;
+    const key = JSON.stringify([saved.rules, saved.raw, task.body, task.result, task.comments.map((c) => c.body), task.runs.map((r) => r.summary)]);
     if (this.scan?.key === key) return;
     const scan = this.scan = { key, records: null, errors: [], error: saved.error ?? "" };
     if (saved.error || !saved.rules.length) return;
@@ -742,7 +749,7 @@ class TaskDetails {
     const show = (cx, text, failed = false) => { this.launches[key] = { text, failed }; cx.notify(); };
     const space = spaces().find((s) => s.active);
     if (!space) return show(cx, "No space is selected, so there is no folder to start in.", true);
-    if (space.machine) return show(cx, `Session commands run on this computer, and the selected space is on ${space.machine}.`, true);
+    if (space.machine) return show(cx, `Record commands run on this computer, and the selected space is on ${space.machine}.`, true);
     if (record.argv[0].includes("=")) return show(cx, `Not started: env would read the program name “${record.argv[0]}” as a variable.`, true);
     const cwd = space.folder || home(); // an empty folder is the space's own: its machine's home (SpaceInfo.folder)
     // A tab id the App does not know yet becomes a new tab in that space, showing this terminal.
@@ -793,11 +800,11 @@ class TaskDetails {
         .when(Boolean(launch), (el) => el.child(div().text_size(12).text_color(launch.failed ? t.blocked : t.muted).child(launch.text)));
     };
     return v_flex().flex_1().min_h(0).px(18).pb(18).pt(10).gap(8).overflow_y_scrollbar()
-      .child(div().text_size(11.5).text_color(t.dim).child("Records your session rules find in the description, result, comments and run summaries. "
+      .child(div().text_size(11.5).text_color(t.dim).child("Records your rules find in the description, result, comments and run summaries. "
         + "A click starts the command again, in the selected space's folder. Settings at the top right edits the rules."))
       .when(Boolean(scan?.error), (el) => el.child(banner(scan.error, t.blocked)))
       .children((scan?.errors ?? []).map((e) => banner(e.error, t.blocked)))
-      .when(!saved.error && !saved.rules?.length, (el) => el.child(note("No session rules yet. Add them with Settings at the top right.")))
+      .when(!saved.error && !saved.rules?.length, (el) => el.child(note("No rules yet. Add them with Settings at the top right.")))
       .when(Boolean(saved.rules?.length && scan && !scan.records && !scan.error), (el) => el.child(note("Reading…")))
       .when(Boolean(scan?.records && !records.length), (el) => el.child(note("The rules find no records in this task.")))
       .children(records.slice(0, this.shown).map(item))
@@ -826,16 +833,34 @@ class TaskDetails {
   }
 }
 
-// The session rules dialog, opened by the Settings control with props { settings }. It edits a copy of the
-// shared rules and saves it only when the helper finds no problem in any rule.
+// The Settings dialog, opened by the Settings control with props { settings }. It edits a copy of the
+// shared rules and records tab name, saves it only when the helper finds no problem in any rule,
+// and asks before Esc or Close throws away unsaved changes.
+let escapeBound = false;
 class SessionSettings {
   init(cx) {
     this.handle = cx.focus_handle();
     this.handle.focus();
     const saved = savedRules();
     this.malformed = saved.error ? saved : null;
+    this.name = InputState.new({ value: saved.name, placeholder: TAB_NAME });
     this.rows = (saved.rules ?? []).map((r) => this.row(r));
-    this.errors = {}; this.notice = ""; this.saving = false;
+    this.errors = {}; this.notice = ""; this.saving = false; this.confirming = false;
+    this.clean = JSON.stringify(this.current());
+    // Herdr closes the top dialog on Esc before a key handler sees it; a binding in this dialog's context comes first.
+    // The keymap is the App's, so bind it once.
+    if (!escapeBound) escapeBound = cx.bind_keys([{ keystroke: "escape", action: "shepherd-settings-escape", context: "ShepherdSettings" }]) > 0;
+  }
+
+  current() {
+    return { name: this.name.value().trim(),
+      rules: this.rows.map((r) => ({ regex: r.regex.value(), command: r.command.value(), description: r.description.value(), tab: r.tab })) };
+  }
+
+  // Esc, Close and ✕: with unsaved changes, ask first. Only Discard then closes; Esc again keeps editing.
+  leave(cx) {
+    if (JSON.stringify(this.current()) === this.clean) return closeOverlay(props().overlay);
+    this.confirming = true; cx.notify();
   }
 
   row(rule = { regex: "", command: "", description: "", tab: true }) {
@@ -848,27 +873,30 @@ class SessionSettings {
   }
 
   release(row) { for (const field of ["regex", "command", "description"]) row[field].release(); }
-  close() { this.rows.forEach((row) => this.release(row)); this.rows = []; }
+  close() { this.closed = true; this.rows.forEach((row) => this.release(row)); this.rows = []; this.name.release(); }
 
-  edit(cx, change) { change(); this.errors = {}; this.notice = ""; cx.notify(); }
+  edit(cx, change) { change(); this.errors = {}; this.notice = ""; this.confirming = false; cx.notify(); }
   move(i, step, cx) { this.edit(cx, () => { const [row] = this.rows.splice(i, 1); this.rows.splice(i + step, 0, row); }); }
   remove(i, cx) { this.edit(cx, () => this.release(this.rows.splice(i, 1)[0])); }
 
   save(cx) {
     if (this.saving) return;
-    this.saving = true; this.notice = "";
-    const current = () => this.rows.map((r) => ({ regex: r.regex.value(), command: r.command.value(), description: r.description.value(), tab: r.tab }));
-    const rules = current();
+    this.notice = ""; this.confirming = false;
+    const settings = this.current();
+    if (!settings.name) { this.notice = "Not saved: the tab name is empty."; return cx.notify(); }
+    this.saving = true;
     cx.spawn(async (cx) => {
       try {
-        const { code, reply } = await call(["--check-rules", JSON.stringify(rules)]);
+        const { code, reply } = await call(["--check-rules", JSON.stringify(settings.rules)]);
         if (code !== 0 || reply.error) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
         this.errors = {};
         for (const e of reply.errors) (this.errors[e.rule] ??= []).push(e.error);
         if (reply.errors.length) { this.notice = "Not saved: fix the rules marked below."; return; }
         // Typing goes straight into the inputs, so text changed during the check was not checked.
-        if (JSON.stringify(current()) !== JSON.stringify(rules)) { this.notice = "Not saved: the rules changed while they were checked. Save again."; return; }
-        setShared(RULES, { rules });
+        if (this.closed) return; // discarded while the check ran
+        if (JSON.stringify(this.current()) !== JSON.stringify(settings)) { this.notice = "Not saved: the settings changed while they were checked. Save again."; return; }
+        setShared(RULES, settings);
+        this.clean = JSON.stringify(settings);
         this.malformed = null; this.notice = "Saved.";
       } catch (e) { this.notice = `Not saved: ${e?.message ?? e}`; }
       finally { this.saving = false; cx.notify(); }
@@ -907,21 +935,27 @@ class SessionSettings {
       .children((this.errors[i] ?? []).map((text) => div().text_size(12).text_color(t.blocked).child(text)));
 
     return v_flex().id("session-settings").track_focus(this.handle).size_full().min_h(0).bg(t.popover).text_color(t.foreground)
-      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
+      .key_context("ShepherdSettings")
+      .on_action("shepherd-settings-escape", (_e, cx) => {
+        if (this.confirming) { this.confirming = false; cx.notify(); } else this.leave(cx);
+      })
       .child(h_flex().flex_none().px(18).pt(16).pb(10).gap(10).items_start().border_b(1).border_color(t.border)
         .child(v_flex().flex_1().min_w(0).gap(4)
-          .child(div().text_size(15).font_semibold().child("Session rules"))
-          .child(div().text_size(11.5).text_color(t.dim).child("Shared by every Shepherd tab. A task's Sessions tab lists what these rules find in its "
-            + "description, result, comments and run summaries. At each place in the text the first rule that matches wins.")))
+          .child(div().text_size(15).font_semibold().child("Settings"))
+          .child(div().text_size(11.5).text_color(t.dim).child("Shared by every Shepherd tab. A task's records tab lists what the rules find in its "
+            + "description, result, comments and run summaries. At each place in the text the earliest match wins, and the first rule among matches there.")))
         .child(div().flex_none().text_size(11).text_color(t.dim).child("Esc"))
         .child(h_flex().id("settings-close").size(24).flex_none().items_center().justify_center().rounded(6)
           .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => closeOverlay(props().overlay)).child("✕")))
+          .on_click((_e, cx) => this.leave(cx)).child("✕")))
       .child(v_flex().id("rules").flex_1().min_h(0).px(18).py(12).gap(10).overflow_y_scrollbar()
+        .child(field("Records tab name: the task popup's tab that lists the records", this.name))
+        .child(div().pt(6).text_size(12.5).font_semibold().text_color(t.foreground).child("Rules"))
         .child(div().text_size(12).text_color(t.muted).child("Regex: a Python regular expression. Command and Description: $1, $2 … insert capture groups, "
           + "$0 the whole match, $$ a dollar sign. The command is split into arguments the way a shell would (quotes, backslashes) before "
           + "captures go in, so a capture is always literal text inside one argument. It runs without a shell, through Herdr Core, "
-          + "in the selected space's folder: in a new tab, or in the background when Open in new tab is off."))
+          + "in the selected space's folder: in a new tab, or in the background when Open in new tab is off. Matching stops a rule "
+          + "that spends more than half of 3 s on a task, and matches the other rules without it."))
         .when(Boolean(this.malformed), (el) => el.child(v_flex().p(10).gap(6).rounded(7).border(1).border_color(t.blocked).bg(t.surface)
           .child(div().text_size(12.5).font_semibold().text_color(t.blocked).child(this.malformed.error))
           .child(div().text_size(12).text_color(t.foreground).child("They are kept as they are. Saving here replaces them with the rules below."))
@@ -930,9 +964,15 @@ class SessionSettings {
         .children(this.rows.map(rule))
         .child(h_flex().child(button("rule-add", "Add rule", false, (_e, cx) => this.edit(cx, () => this.rows.push(this.row()))))))
       .child(h_flex().flex_none().px(18).py(12).gap(8).items_center().border_t(1).border_color(t.border)
-        .child(div().flex_1().text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice))
-        .child(button("settings-cancel", "Close", false, () => closeOverlay(props().overlay)))
-        .child(button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx))));
+        .children(this.confirming ? [
+          div().flex_1().text_size(12.5).text_color(t.blocked).child("Discard your unsaved changes?"),
+          button("settings-keep", "Keep editing", false, (_e, cx) => { this.confirming = false; cx.notify(); }),
+          button("settings-discard", "Discard", true, () => closeOverlay(props().overlay)),
+        ] : [
+          div().flex_1().text_size(12).text_color(this.notice === "Saved." ? t.muted : t.blocked).child(this.notice),
+          button("settings-cancel", "Close", false, (_e, cx) => this.leave(cx)),
+          button("settings-save", this.saving ? "Checking…" : "Save", true, (_e, cx) => this.save(cx)),
+        ]));
   }
 }
 

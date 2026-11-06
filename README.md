@@ -53,18 +53,18 @@ If the coordinator exits, or `hermes` cannot start, the board shows why, with th
 
 The Cron jobs button at the top right lists the cron jobs of every Hermes profile: name, profile, schedule, state, next run, and the last run with its result or error. The list is read-only. Create, edit, pause or delete jobs with `hermes cron`. Cron jobs are separate from Parked cards, which wait for the workflow, not for a timer.
 
-### Session records
+### Records and rules
 
-The Settings button at the top right edits an ordered list of session rules, shared by every Shepherd tab in every space. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks every rule first and saves nothing while one has a problem.
+The Settings button at the top right edits an ordered list of rules and the name of the records tab, shared by every Shepherd tab in every space. The records tab is called Links until you name it otherwise; the name cannot be empty. Each rule has a regex, a command, a description and an Open in new tab checkbox, which new rules start with checked. Save checks every rule first and saves nothing while one has a problem. Esc, Close or ✕ with unsaved changes asks before discarding them.
 
 - The regex is a Python regular expression. In the command and the description, `$1`, `$2` and so on insert capture groups, `$0` the whole match, and `$$` a dollar sign.
 - The command is split into arguments the way a shell would, with quotes and backslashes, before the captures go in. A capture is always literal text inside one argument, whatever quotes, spaces or `$(…)` it holds.
 
-A task's Sessions tab lists what the rules find in its description, result, comments and run summaries. Each text is read from start to end. Where several rules match, the match that starts first wins, and among matches at the same place the first rule in the list. Reading then goes on after the match. A record with the same command and description as an earlier one is listed once. The Details tab shows the task's text unchanged.
+A task's records tab lists what the rules find in its description, result, comments and run summaries. Each text is read from start to end. Where several rules match, the match that starts first wins, and among matches at the same place the first rule in the list. Reading then goes on after the match. A record with the same command and description as an earlier one is listed once. The Details tab shows the task's text unchanged.
 
 Clicking a record starts its command again every time. Shepherd never reuses or focuses a running one. It runs the command through Herdr Core in the folder of the selected space, as `env -- <command>`, without a shell. Without `env`, `hc run` would treat a single argument with spaces or shell characters as a shell line, and a first word naming an hc template as that template. With Open in new tab checked, the command opens in a new tab of the selected space. Otherwise it runs in the background, where `hc ls` and `hc read` show it. If the program is missing or exits within a second, the record shows its exit code and last lines.
 
-Matching runs in a separate process that Shepherd stops after 3 seconds, so a regex that backtracks catastrophically cannot freeze Herdr. The Sessions tab then names the rule and shows no records for that task. Saved rules that are not a valid rule list are left as they are: Sessions uses none of them, and Settings shows the saved value until Save replaces it.
+Matching runs in the background, in a separate process, so the dialog stays usable while it runs. Matching a task is stopped after 3 seconds. The rule that spent most of that time is marked as timed out, and the other rules are matched again without it. A timed-out rule therefore finds nothing in that task, and text it might have claimed goes to the rule that wins without it. When no rule spent most of the time, the tab says the task is too large for the rules and names none. Retries stop after 15 seconds in all, and nothing keeps running after matching is stopped. The tab matches again only when the rules or the task's own text change. Saved settings that are not a valid name and rule list are left as they are: the records tab uses no rules, and Settings shows the saved value until Save replaces it.
 
 ## Requirements
 
@@ -125,7 +125,7 @@ Without Home Manager, write `[{"label": "Hermes", "mod": "hermes-shepherd"}]` to
 
 ## Development
 
-Run the helpers' tests with the Hermes Python. They build boards, cron jobs and session records in temporary Hermes homes:
+Run the helpers' tests with the Hermes Python. They build boards, cron jobs and records in temporary Hermes homes:
 
 ```sh
 "$HERMES_PYTHON" -m unittest discover tests
