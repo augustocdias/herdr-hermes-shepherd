@@ -8,8 +8,8 @@
 // restore or delete, or the archived-task list (ActionMenu, Confirm, Archived).
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
+import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
+import { spaces, panes, terminals, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
 
 const MOD = "hermes-shepherd";
 // Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
@@ -37,6 +37,7 @@ const ICONS = {
 const HELPER = "hermes-shepherd-board";
 const FILTERS = "hermes-shepherd.filters";
 const CARD = 248;
+const COLUMN = CARD + 16, COLUMN_GAP = 10, BOARD_PAD = 12; // the board's layout, also used to tell when it overflows
 const POLL_MS = 30000;
 // Hermes stores `scheduled`; Shepherd shows it as Parked. Nothing else is renamed.
 const DISPLAY = { scheduled: "Parked" };
@@ -430,6 +431,8 @@ export default class Shepherd extends View {
       return h_flex().id(`card-${task.id}`).w(CARD).flex_none().p(10).gap(9).items_start().rounded(8)
         .border(1).border_color(selected ? t.accent : t.border).bg(t.background)
         .hover((s) => s.bg(t.hover).border_color(selected ? t.accent : t.input))
+        // A running task pulses natively, so active work stands out without a timer.
+        .when(task.status === "running", (el) => el.loop("opacity", { from: 0.6, to: 1, period: 1600 }))
         .on_click((_e, cx) => { this.sel = { col: c, row: r }; this.handle.focus(); this.openTask(task); cx.notify(); })
         .child(div().mt(4).size(9).flex_none().rounded(5).bg(t[MARKER[task.status]] ?? t.unknown))
         .child(v_flex().flex_1().min_w(0).gap(5)
@@ -444,15 +447,22 @@ export default class Shepherd extends View {
           .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { col: c, row: r }; this.openActions(task); cx.notify(); })
           .child("⋯"));
     };
-    const column = (c, i) => v_flex().id(`col-${c.key}`).w(CARD + 16).flex_none().h_full().min_h(0).rounded(9).bg(t.surface)
+    const column = (c, i) => v_flex().id(`col-${c.key}`).relative().w(COLUMN).flex_none().h_full().min_h(0).rounded(9).bg(t.surface)
       .child(h_flex().flex_none().h(34).px(10).gap(7).items_center()
         .child(div().size(8).flex_none().rounded(4).bg(t[MARKER[c.key]] ?? t.unknown))
         .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child(label(c)))
         .child(div().text_size(12).text_color(t.dim).child(String(c.tasks.length))))
-      .child(v_flex().id(`list-${c.key}`).flex_1().min_h(0).px(8).pb(8).gap(6).overflow_y_scrollbar()
-        .children(c.tasks.map((task, r) => card(task, i, r))));
+      .child(v_flex().id(`list-${c.key}`).min_h(0).px(8).pb(8).gap(6).overflow_y_scroll()
+        // A vertical wheel over the cards scrolls this column only, even a short one; elsewhere it scrolls the board sideways.
+        .on_scroll_wheel((e, cx) => { if (Math.abs(e.delta.y) > Math.abs(e.delta.x)) cx.stop_propagation(); })
+        .children(c.tasks.map((task, r) => card(task, i, r))))
+      .child(Scrollbar.vertical(`list-${c.key}`).absolute().top(34).bottom(0).left(0).right(0));
     return v_flex().id("shepherd").size_full().min_w(0).bg(t.canvas).track_focus(this.handle)
-      .on_size_change((size, cx) => { if (size.width > 0) this.claim(cx); })
+      .on_size_change((size, cx) => {
+        if (size.width > 0) this.claim(cx);
+        const width = size.width / settings().zoom;
+        if (width !== this.width) { this.width = width; cx.notify(); }
+      })
       .on_key_down((e, cx) => {
         if (["left", "right", "up", "down"].includes(e.key)) this.move(e.key, cols);
         else if (e.key === "escape") this.sel = null;
@@ -468,8 +478,11 @@ export default class Shepherd extends View {
       .child(toolbar)
       .when(Boolean(banner), (el) => el.child(banner))
       .when(Boolean(coordinatorBanner), (el) => el.child(coordinatorBanner))
-      .when(Boolean(this.data), (el) => el.child(h_flex().id("shepherd-board").flex_1().min_h(0).p(12).gap(10).items_start()
-        .overflow_x_scrollbar().children(cols.map(column))));
+      // overflow_x_scroll, unlike overflow_x_scrollbar, also turns a vertical wheel into sideways scrolling.
+      // The bar shows only while the columns overflow; it would show a full-width thumb otherwise.
+      .when(Boolean(this.data), (el) => el.child(div().flex_1().min_h(0).relative()
+        .child(h_flex().id("shepherd-board").size_full().p(BOARD_PAD).gap(COLUMN_GAP).items_start().overflow_x_scroll().children(cols.map(column)))
+        .when(cols.length * (COLUMN + COLUMN_GAP) - COLUMN_GAP + 2 * BOARD_PAD > this.width, (el) => el.child(Scrollbar.horizontal("shepherd-board").mode("always").absolute().inset_0()))));
   }
 
   renderMenu(menu) {
