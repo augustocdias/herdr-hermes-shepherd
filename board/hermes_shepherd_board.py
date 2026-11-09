@@ -10,6 +10,7 @@ Usage:
   hermes-shepherd-board --check-profile NAME           why NAME is not a Hermes profile name, if it is not
   hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, unblock, archive, restore or delete
   hermes-shepherd-board --comment BOARD ID BODY        add a comment to a task that is not done or archived
+  hermes-shepherd-board --create BOARD TITLE BODY      add a task to Triage; BODY is its description, may be empty
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
 name). It follows `--`, so a tab named like a flag still names a board; a NAME that does
@@ -412,7 +413,7 @@ def act(board, task_id, action, expected):
                 "task": details(conn, task_id) if after else None}
 
 
-# The author Shepherd writes comments as: the name Hermes's own CLI uses for a person without a profile.
+# The author and creator Shepherd writes as: the name Hermes's own CLI uses for a person without a profile.
 AUTHOR = "user"
 CLOSED = ("done", "archived")
 
@@ -434,6 +435,17 @@ def comment(board, task_id, body):
         # the comment; upgrade if Hermes gains a guarded add_comment.
         kb.add_comment(conn, task_id, AUTHOR, body)
         return {"done": "comment", "task": details(conn, task_id)}
+
+
+def create(board, title, body):
+    """Add a task to Triage through Hermes's create_task; Hermes picks the workspace as its dashboard does."""
+    kb, _, _ = hermes()
+    if not title.strip():
+        raise RuntimeError("The title is empty.")
+    _, connection = open_board(board)
+    with connection as conn:
+        task_id = kb.create_task(conn, title=title.strip(), body=body.strip() or None, triage=True, created_by=AUTHOR, board=board)
+        return {"done": "create", "task": details(conn, task_id)}
 
 
 def check_profile(name):
@@ -458,6 +470,7 @@ COMMANDS = {
     "--archived": (1, archived),
     "--act": (4, act),
     "--comment": (3, comment),
+    "--create": (3, create),
 }
 
 

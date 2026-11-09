@@ -6,7 +6,8 @@
 // it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
 // with props { settings } it is the Settings dialog for the record rules and the records tab name (SessionSettings).
 // With props { actions }, { confirm } or { archived } it is a card's action menu, the confirmation of an archive,
-// restore or delete, or the archived-task list (ActionMenu, Confirm, Archived).
+// restore or delete, or the archived-task list (ActionMenu, Confirm, Archived); with props { create }, the
+// New task dialog that adds a task to Triage (CreateTask).
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
@@ -179,7 +180,8 @@ export default class Shepherd extends View {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
     if (props()?.panel) { this.details = new ShepherdPanel(); this.details.init(cx); return; }
-    const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived : null;
+    const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived
+      : props()?.create ? CreateTask : null;
     if (Overlay) { this.details = new Overlay(); this.details.init(cx); return; }
     this.handle = cx.focus_handle();
     if (props()?.menu) { this.at = 0; this.handle.focus(); return; }
@@ -362,6 +364,11 @@ export default class Shepherd extends View {
     });
   }
 
+  openCreate() {
+    openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 640, height: 520,
+      props: { create: { board: this.data.board, name: this.data.board_name } } });
+  }
+
   render(cx) {
     awaitAssets(this, cx);
     if (this.details) return this.details.render(cx);
@@ -393,6 +400,7 @@ export default class Shepherd extends View {
       .child(div().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(status))
       .child(filter("chip-repo", "Repository", describe(filters.repository), "repository"))
       .child(filter("chip-spec", "Spec", describe(filters.spec), "spec"))
+      .when(Boolean(this.data), (el) => el.child(button(t, "shepherd-new", "New task", null, () => this.openCreate(), "plus")))
       .child(button(t, "shepherd-refresh", "Refresh", null, (_e, cx) => this.refresh(cx), "refresh"));
     const banner = this.error && v_flex().flex_none().mx(16).mt(12).p(10).gap(4).rounded(8).border(1).border_color(t.blocked).bg(tint(t.blocked, "14"))
       .child(div().text_size(12.5).font_semibold().text_color(t.blocked)
@@ -456,6 +464,7 @@ export default class Shepherd extends View {
         else if (e.key === "escape") this.sel = null;
         else if (e.key === "enter" && cols[this.sel?.col]?.tasks[this.sel.row]) this.openTask(cols[this.sel.col].tasks[this.sel.row]);
         else if (e.key === "m" && cols[this.sel?.col]?.tasks[this.sel.row]) this.openActions(cols[this.sel.col].tasks[this.sel.row]);
+        else if (e.key === "n" && this.data) this.openCreate();
         else if (e.key === "r") this.openMenu("repository");
         else if (e.key === "s") this.openMenu("spec");
         else if (e.key === "f5") this.refresh(cx);
@@ -1332,6 +1341,58 @@ class Confirm {
         .child(button(t, "confirm-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
         .when(Boolean(ok), (el) => el.child(button(t, "confirm-yes", this.busy ? "Working…" : VERB[action],
           action === "delete" ? "danger" : "primary", (_e, cx) => this.confirm(cx)))));
+  }
+}
+
+// The New task dialog: a title and a Markdown description, added to Triage through Hermes's create_task.
+// Hermes runs no Triage task, so nothing asks for confirmation.
+class CreateTask {
+  init(cx) {
+    this.ref = props().create;
+    this.error = ""; this.busy = false;
+    this.title = InputState.new({ placeholder: "What should be done?" });
+    this.title.on("submit", (_e, cx) => this.create(cx));
+    this.body = TextareaState.new({ placeholder: "Describe the task in Markdown (optional)", rows: 8 });
+    onCtrlEnter(this.body, (cx) => this.create(cx));
+    this.title.focus();
+  }
+
+  close() { this.title.release(); this.body.release(); }
+
+  create(cx) {
+    const title = this.title.value();
+    if (this.busy || !title.trim()) return;
+    this.busy = true; this.error = "";
+    cx.spawn(async (cx) => {
+      try {
+        // shortcut: the description travels as one argument, which Linux caps at 128 KiB.
+        const { code, reply } = await call(["--create", this.ref.board, title, this.body.value()]);
+        if (code !== 0) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        closeOverlay(props().overlay);
+        notify({ title: `Added to Triage: ${reply.task.title}`, body: "Its description can be edited while it stays in Triage.", level: "success" });
+      } catch (e) { this.error = e?.message ?? String(e); }
+      finally { this.busy = false; cx.notify(); }
+    });
+  }
+
+  render(cx) {
+    const t = theme();
+    return v_flex().id("create-task").size_full().min_h(0).bg(t.canvas).text_size(13)
+      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props().overlay); cx.stop_propagation(); } })
+      .child(titleBar(t, "create", [div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground)
+        .child(`New task on ${this.ref.name}`)], () => closeOverlay(props().overlay)))
+      .child(v_flex().flex_1().min_h(0).px(20).py(16).gap(10)
+        .child(heading(t, "Title"))
+        .child(Input.new(this.title).h(32).px(8).rounded(6).border_1().border_color(t.input).bg(t.chrome).text_color(t.foreground))
+        .child(div().mt(4).child(heading(t, "Description")))
+        .child(Textarea.new(this.body).w_full().flex_1().min_h(0).p(10).rounded(8).border_1().border_color(t.input)
+          .bg(t.chrome).text_color(t.foreground).text_size(13))
+        .child(div().text_size(11.5).text_color(t.muted).child("Enter in the title or Ctrl+Enter in the description adds it."))
+        .child(div().text_size(11.5).text_color(t.muted).child("It goes to Triage, where no worker starts it. With Hermes's kanban.auto_decompose on, the gateway may rewrite it and send it to Todo within a minute."))
+        .when(Boolean(this.error), (el) => el.child(errorBox(t, this.error))))
+      .child(h_flex().flex_none().px(16).py(12).justify_end().gap(8).border_t(1).border_color(t.border)
+        .child(button(t, "create-cancel", "Cancel", null, () => closeOverlay(props().overlay)))
+        .child(button(t, "create-yes", this.busy ? "Adding…" : "Add to Triage", "primary", (_e, cx) => this.create(cx))));
   }
 }
 

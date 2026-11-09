@@ -421,6 +421,18 @@ with connect_closing() as c:
             self.assertEqual(code, 2, reply)
             self.assertEqual(len(reply["task"]["comments"]), 1)
 
+    def test_create_adds_a_task_to_triage(self):
+        self.assertEqual(self.helper("--create", "default", "x", "")[0], 1)  # never creates the board
+        self.native("with connect_closing() as c:\n    pass")
+        code, reply = self.helper("--create", "default", "  New idea  ", "\nDo **this**.\n")
+        self.assertEqual(code, 0, reply)
+        task = reply["task"]
+        self.assertEqual((task["title"], task["body"], task["status"], task["editable"]), ("New idea", "Do **this**.", "triage", True))
+        self.assertIn(task["id"], [t["id"] for t in self.helper()[1]["tasks"]])
+        code, reply = self.helper("--create", "default", "Bare", "  ")
+        self.assertEqual((code, reply["task"]["body"]), (0, ""), reply)
+        self.assertEqual(self.helper("--create", "default", " ", "body")[0], 1)
+        self.assertEqual(self.helper("--create", "missing", "x", "")[0], 1)
 
 
 if __name__ == "__main__":

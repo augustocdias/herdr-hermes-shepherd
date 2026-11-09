@@ -1,6 +1,6 @@
 # Hermes Shepherd
 
-A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. It changes the board only through the description edit, comments and the task actions described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
+A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. It changes the board only through the description edit, comments, new tasks and the task actions described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
 
 ## What the tab shows
 
@@ -9,7 +9,7 @@ A Herdr App tab that shows a live view of a Hermes kanban board. It reads and ed
 - Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the folder of its native Hermes `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
 - The time of the last successful read. If a read fails, a banner shows the error and the last successful read stays on screen.
 
-The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, Enter opens the selected card, `m` opens its menu, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
+The tab refreshes when a Hermes process that wrote to the board closes it, and every 30 seconds. Arrow keys move a selection between cards, Enter opens the selected card, `m` opens its menu, `n` opens New task, `r` and `s` open the Repository and Spec filters, and F5 refreshes.
 
 ### Task details
 
@@ -44,6 +44,10 @@ Every card's menu also offers Archive, which asks first. The confirmation lists 
 - Archived tasks count as finished for their children, so Todo and Blocked children whose other parents are finished may move to Ready and start.
 
 Archiving keeps the description, comments, runs and history. Hermes's own `hermes kanban gc` may later delete old events of archived tasks.
+
+### New tasks
+
+New task, in the board's toolbar, or `n`, asks for a title and an optional Markdown description and adds the task to Triage on the tab's board through Hermes's own create function, with the creator `user`. Hermes picks its workspace as its dashboard does. No worker starts a Triage task, but with Hermes's `kanban.auto_decompose` setting on, its gateway may rewrite the task and send it to Todo within about a minute. Enter in the title, Ctrl+Enter in the description, or Add to Triage adds it, and the description can still be edited while the task is in Triage.
 
 Show archived, at the top right, lists the board's archived tasks. If the board has not loaded, it says why instead. Click one to read its details. Restore moves it back to Triage, never to its old column, after a confirmation, so its description can be edited again. A restored task counts as unfinished again, so Hermes moves its descendants that are Ready, Running, Review or Done back to Todo and stops their running workers. Delete removes an archived task, its comments, runs, history and links for good, through Hermes's archived-only delete. It asks first, and Enter does not confirm it.
 
