@@ -482,8 +482,8 @@ export default class Shepherd extends View {
 }
 
 // One task's details: opened by the board as a dialog with props { task: { board, id, db } }.
-// Shows the task's native status, assignment and context, its description and its history
-// (comments, runs, events) as Markdown, and edits the description while Hermes allows it.
+// Shows the task's native status, assignment and context, its description and comments, and its events,
+// runs and full history on their own tabs, as Markdown. It edits the description while Hermes allows it.
 // The helper rechecks eligibility and freshness when saving; a refused save keeps the draft.
 // It shares this file with the board because Herdr refuses a relative import that resolves outside the mod folder,
 // and Home Manager links main.js on its own so the folder stays writable for the icons.
@@ -492,7 +492,40 @@ export default class Shepherd extends View {
 const DRAFTS = "hermes-shepherd.drafts";
 
 // The popup's tabs. A tab without a label shows the records tab name the user set in Settings.
-const TABS = [{ key: "details", label: "Details" }, { key: "sessions" }];
+const TABS = [{ key: "details", label: "Details" }, { key: "events", label: "Events" }, { key: "runs", label: "Runs" },
+  { key: "history", label: "History" }, { key: "sessions" }];
+// Hermes adds a `commented` event for every comment; the comment itself is shown instead.
+const shownEvents = (task) => task.events.filter((e) => e.kind !== "commented");
+// Markdown with each pipe table in its own sideways-scrolling box, wide enough that long cells do not
+// squeeze the columns into slivers. Code fences are left alone.
+// shortcut: only tables whose rows start with "|" are found; one written without outer pipes stays squeezed.
+const TABLE_DELIMITER = /^\s{0,3}\|?(\s*:?-+:?\s*\|)+\s*(:?-+:?\s*)?$/;
+const TABLE_ROW = /^\s{0,3}\|/;
+function markdownBlocks(text) {
+  const lines = text.split("\n"), blocks = [];
+  let prose = [], fence = null;
+  const flush = () => { if (prose.join("").trim()) blocks.push({ text: prose.join("\n") }); prose = []; };
+  for (let i = 0; i < lines.length; i++) {
+    const marker = lines[i].match(/^\s{0,3}(`{3,}|~{3,})/)?.[1][0];
+    if (marker) fence = !fence ? marker : fence === marker ? null : fence;
+    else if (!fence && TABLE_ROW.test(lines[i]) && TABLE_DELIMITER.test(lines[i + 1] ?? "")) {
+      let end = i + 2;
+      while (end < lines.length && TABLE_ROW.test(lines[end])) end++;
+      flush();
+      const rows = lines.slice(i, end).filter((_, r) => r !== 1)
+        .map((row) => row.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((cell) => cell.trim().length));
+      // About 7.5 px a character at 13.5 px text, at most 48 characters a column before a cell wraps.
+      const width = Array.from({ length: Math.max(...rows.map((r) => r.length)) },
+        (_, c) => Math.min(48, Math.max(4, ...rows.map((r) => r[c] ?? 0))) * 7.5 + 28).reduce((a, b) => a + b, 0);
+      blocks.push({ text: lines.slice(i, end).join("\n"), width });
+      i = end - 1;
+      continue;
+    }
+    prose.push(lines[i]);
+  }
+  flush();
+  return blocks;
+}
 
 // Record rules, the records tab's name and the panel's Hermes profile, global like the filters:
 // { name?, profile?, rules: [{ regex, command, description, tab }] }.
@@ -642,10 +675,21 @@ class TaskDetails {
   render(cx) {
     const t = theme();
     const task = this.task;
-    const meta = (name, value, mono) => value ? v_flex().gap(4).min_w(0)
+    // A list value shows one bullet per item.
+    const meta = (name, value, mono) => (Array.isArray(value) ? value.length : value) ? v_flex().gap(4).min_w(0)
       .child(heading(t, name))
-      .child(div().min_w(0).text_size(mono ? 12 : 13).when(Boolean(mono), (el) => el.font_family(MONO)).text_color(t.foreground).child(String(value))) : null;
-    const markdown = (id, text) => TextView.markdown(id, text).selectable(true).text_size(13.5);
+      .child(Array.isArray(value)
+        ? v_flex().gap(4).min_w(0).children(value.map((item) => h_flex().gap(6).items_start().text_size(13).text_color(t.foreground)
+          .child(div().flex_none().text_color(t.muted).child("•")).child(div().min_w(0).child(item))))
+        : div().min_w(0).text_size(mono ? 12 : 13).when(Boolean(mono), (el) => el.font_family(MONO)).text_color(t.foreground).child(String(value))) : null;
+    const markdown = (id, text) => {
+      const blocks = markdownBlocks(text);
+      const view = (i, block) => TextView.markdown(`${id}-${i}`, block.text).selectable(true).text_size(13.5);
+      if (blocks.length === 1 && !blocks[0].width) return view(0, blocks[0]);
+      return v_flex().gap(10).min_w(0).children(blocks.map((block, i) => block.width
+        ? div().id(`${id}-table-${i}`).w_full().pb(6).overflow_x_scrollbar().child(div().min_w(block.width).child(view(i, block)))
+        : view(i, block)));
+    };
     const close = () => closeOverlay(props().overlay);
 
     const bar = titleBar(t, "details", [
@@ -656,8 +700,10 @@ class TaskDetails {
     if (task && this.tab === "sessions") this.scanSessions(cx);
     const records = this.tab === "sessions" ? (this.scan?.records ?? []).slice(0, this.shown) : [];
     if (records.length) this.at = Math.min(this.at, records.length - 1); // a rescan can shorten the list
-    const badge = (key) => key === "details" ? (task ? String(task.comments.length) : null)
-      : this.scan?.records ? String(this.scan.records.length) : null;
+    const counts = task && { details: task.comments.length, events: shownEvents(task).length, runs: task.runs.length,
+      history: task.comments.length + shownEvents(task).length + task.runs.length };
+    const badge = (key) => key === "sessions" ? (this.scan?.records ? String(this.scan.records.length) : null)
+      : counts ? String(counts[key]) : null;
     const head = v_flex().flex_none().px(20).pt(16)
       .when(Boolean(task), (el) => el.child(h_flex().flex_wrap().gap(8).items_center()
         .child(statusChip(t, task.status))
@@ -695,8 +741,11 @@ class TaskDetails {
       : task.body ? markdown(`details-body-${task.version}`, task.body)
         : div().text_size(13).text_color(t.muted).child("No description."));
 
+    const lists = { events: ["events"], runs: ["runs"], history: ["events", "comments", "runs"] };
     const body = task && this.tab === "sessions" ? this.sessions(t, banner) : task && h_flex().flex_1().min_h(0).items_start()
-      .child(v_flex().id("details-main").flex_1().min_w(0).h_full().px(20).pt(18).pb(20).gap(22).overflow_y_scrollbar()
+      .child(lists[this.tab] ? v_flex().id(`details-${this.tab}`).flex_1().min_w(0).h_full().px(20).pt(18).pb(20).gap(12).overflow_y_scrollbar()
+        .children(this.history(task, t, markdown, lists[this.tab]))
+      : v_flex().id("details-main").flex_1().min_w(0).h_full().px(20).pt(18).pb(20).gap(22).overflow_y_scrollbar()
         .when(Boolean(this.notice), (el) => el.child(banner(this.notice, t.blocked)))
         .child(v_flex().gap(8)
           .child(h_flex().gap(8).items_center().child(div().flex_1().child(heading(t, "Description")))
@@ -706,16 +755,16 @@ class TaskDetails {
           .when(!task.editable, (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.edit_blocked)))
           .child(editor))
         .when(Boolean(task.result), (el) => el.child(v_flex().gap(8).child(heading(t, "Result")).child(markdown("details-result", task.result))))
-        .child(v_flex().gap(12).child(heading(t, `History · ${task.comments.length + task.runs.length + task.events.filter((e) => e.kind !== "commented").length}`))
-          .children(this.history(task, t, markdown))))
+        .child(v_flex().gap(12).child(heading(t, `Comments · ${task.comments.length}`))
+          .children(this.history(task, t, markdown, ["comments"]))))
       .child(v_flex().id("details-aside").w(240).flex_none().h_full().px(18).pt(18).pb(20).gap(14).overflow_y_scrollbar()
         .border_l(1).border_color(t.border).bg(t.background)
         .children([
           meta("Assignee", task.assignee || "Unassigned"), meta("Spec", task.spec, true), meta("Repository", task.repository, true),
           meta("Workspace", task.workspace, true), meta("Priority", task.priority), meta("Created", when(task.created_at)),
           meta("Started", when(task.started_at)), meta("Completed", when(task.completed_at)),
-          meta("Parents", task.parents.map((p) => `${p.title} (${status(p.status)})`).join(", ")),
-          meta("Children", task.children.map((c) => `${c.title} (${status(c.status)})`).join(", ")),
+          meta("Parents", task.parents.map((p) => `${p.title} (${status(p.status)})`)),
+          meta("Children", task.children.map((c) => `${c.title} (${status(c.status)})`)),
         ].filter(Boolean)));
 
     return v_flex().id("details").track_focus(this.handle).size_full().min_h(0).bg(t.canvas).text_color(t.foreground)
@@ -845,27 +894,28 @@ class TaskDetails {
           (_e, cx) => { this.shown += RECORDS_SHOWN; cx.notify(); }))));
   }
 
-  // Comments, runs and events in time order. Text is rendered as written; nothing is rewritten.
-  history(task, t, markdown) {
+  // The chosen kinds (events, comments, runs) in time order. Text is rendered as written; nothing is rewritten.
+  history(task, t, markdown, kinds) {
+    const empty = { events: "No events.", comments: "No comments yet.", runs: "No runs yet." };
     const items = [
-      ...task.events.filter((e) => e.kind !== "commented").map((e) => ({ at: e.at, el: h_flex().gap(8).items_center().text_size(12).text_color(t.muted)
+      ...(kinds.includes("events") ? shownEvents(task) : []).map((e) => ({ at: e.at, el: h_flex().gap(8).items_center().text_size(12).text_color(t.muted)
         .child(div().w(26).flex_none().flex().justify_center().child(div().size(6).rounded(3).bg(t.input)))
         .child(div().min_w(0).child(`${e.kind.replaceAll("_", " ")}${e.payload?.reason ? `: ${e.payload.reason}` : ""} · ${when(e.at)}`)) })),
-      ...task.comments.map((c, i) => ({ at: c.at, el: h_flex().gap(10).items_start()
+      ...(kinds.includes("comments") ? task.comments : []).map((c, i) => ({ at: c.at, el: h_flex().gap(10).items_start()
         .child(avatar(t, c.author, 26))
         .child(v_flex().flex_1().min_w(0).gap(3)
           .child(h_flex().gap(8).items_center().text_size(12)
             .child(div().font_semibold().text_color(t.foreground).child(c.author))
             .child(div().text_color(t.muted).child(when(c.at))))
           .child(markdown(`details-comment-${i}`, c.body))) })),
-      ...task.runs.map((r, i) => ({ at: r.started_at, el: v_flex().gap(4).p(10).rounded(8).border(1).border_color(t.border).bg(t.background)
+      ...(kinds.includes("runs") ? task.runs : []).map((r, i) => ({ at: r.started_at, el: v_flex().gap(4).p(10).rounded(8).border(1).border_color(t.border).bg(t.background)
         .child(h_flex().gap(8).items_center().text_size(12)
           .child(div().font_semibold().text_color(t.foreground).child("Run"))
           .child(div().text_color(t.muted).child(`${r.profile || "Unassigned"} · ${r.outcome || r.status} · ${when(r.started_at)}${r.ended_at ? ` to ${when(r.ended_at)}` : ""}`)))
         .when(Boolean(r.summary || r.error), (el) => el.child(markdown(`details-run-${i}`, r.summary || r.error))) })),
     ];
-    if (!items.length) return [div().text_size(13).text_color(t.muted).child("No history.")];
-    return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-history-${i}`).child(item.el));
+    if (!items.length) return [div().text_size(13).text_color(t.muted).child(kinds.length > 1 ? "No history." : empty[kinds[0]])];
+    return items.sort((a, b) => a.at - b.at).map((item, i) => div().id(`details-${kinds.join("-")}-${i}`).child(item.el));
   }
 }
 
@@ -1062,7 +1112,7 @@ class SessionSettings {
 // saw; the helper rechecks it and refuses a task that changed, so an open menu or confirmation never acts
 // on stale state. Hermes's own operations make the change; a refusal shows Hermes's reason.
 
-const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 880, height: 0.85, props: { task: ref } });
+const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 1200, height: 0.85, props: { task: ref } });
 const openConfirm = (action, ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 520, height: 340,
   props: { confirm: { action, board: ref.board, db: ref.db, id: ref.id } } });
 const VERB = { todo: "Send to Todo", ready: "Send to Ready", archive: "Archive", restore: "Restore to Triage", delete: "Delete permanently" };

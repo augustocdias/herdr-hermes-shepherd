@@ -13,7 +13,15 @@ The tab refreshes when a Hermes process that wrote to the board closes it, and e
 
 ### Task details
 
-Clicking a card, or pressing Enter on it, opens the task in a dialog over the board. It shows the task's Hermes status, assigned profile, spec, repository, workspace, priority, dates, parent and child tasks, and its description, result and history. The history lists comments, runs and events in time order. Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. The dialog follows the board, so a task that changes while it is open shows its new state. Esc or the close button dismisses it.
+Clicking a card, or pressing Enter on it, opens the task in a dialog over the board. A side column shows the task's assigned profile, spec, repository, workspace, priority, dates, and its parent and child tasks as bullet lists. The tabs, which ← and → switch between, are:
+
+- Details: the description, the result and the comments.
+- Events: Hermes's log of changes to the task, such as created, claimed, blocked or completed. Hermes logs one for every comment too; those are left out, since the comment shows instead.
+- Runs: each attempt a worker made, with its profile, outcome, times and summary or error.
+- History: comments, events and runs together, in time order.
+- The records tab (see Records and rules).
+
+Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. A table whose rows start with `|` gets its own box, as wide as its contents need, that scrolls sideways. The dialog follows the board, so a task that changes while it is open shows its new state. Esc or the close button dismisses it.
 
 You can edit a task's description only while its Hermes status is Triage. Earlier states and runs do not matter: a task that ran before and was moved back to Triage, or restored from the archive, can be edited. A task in any other column is locked, even if it never ran. Archived tasks are read-only.
 
