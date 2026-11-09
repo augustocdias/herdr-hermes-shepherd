@@ -21,7 +21,7 @@ Clicking a card, or pressing Enter on it, opens the task in a dialog over the bo
 - History: comments, events and runs together, in time order.
 - The records tab (see Records and rules).
 
-Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. A table whose rows start with `|` gets its own box, as wide as its contents need, that scrolls sideways. The dialog follows the board, so a task that changes while it is open shows its new state. Esc or the close button dismisses it.
+Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. A table whose rows start with `|` gets its own box, as wide as its contents need, that scrolls sideways with the scrollbar under it, Shift+wheel or a sideways swipe. A plain wheel scrolls the page. The dialog follows the board, so a task that changes while it is open shows its new state. Esc or the close button dismisses it.
 
 You can edit a task's description only while its Hermes status is Triage. Earlier states and runs do not matter: a task that ran before and was moved back to Triage, or restored from the archive, can be edited. A task in any other column is locked, even if it never ran. Archived tasks are read-only.
 

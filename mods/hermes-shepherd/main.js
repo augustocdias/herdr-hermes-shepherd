@@ -740,7 +740,11 @@ class TaskDetails {
       const view = (i, block) => TextView.markdown(`${id}-${i}`, block.text).selectable(true).text_size(13.5);
       if (blocks.length === 1 && !blocks[0].width) return view(0, blocks[0]);
       return v_flex().gap(10).min_w(0).children(blocks.map((block, i) => block.width
-        ? div().id(`${id}-table-${i}`).w_full().pb(6).overflow_x_scrollbar().child(div().min_w(block.width).child(view(i, block)))
+        // overflow_scroll, not overflow_x_scroll, so a plain wheel scrolls the page instead of turning the table sideways;
+        // the always-shown bar is the visible way to scroll it with a mouse, besides Shift+wheel.
+        ? div().w_full().relative().pb(14)
+          .child(div().id(`${id}-table-${i}`).w_full().overflow_scroll().child(div().min_w(block.width).child(view(i, block))))
+          .child(Scrollbar.horizontal(`${id}-table-${i}`).mode("always").viewport_from_layout().absolute().inset_0())
         : view(i, block)));
     };
     const close = () => closeOverlay(props().overlay);
