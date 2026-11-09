@@ -35,6 +35,8 @@ Any task that is not Done or archived takes comments, running or not. Write one 
 
 Every card has a menu (the `⋯` button). A Triage card offers Send to Todo and Send to Ready. Either one runs at once, without a confirmation: leaving Triage hands the task to Hermes, which may start it right away. Shepherd asks Hermes for the move through the handler that Hermes's own dashboard uses, so Hermes's dependency rule applies. Hermes refuses Ready while a parent task is unfinished, and the menu shows its reason. The task then stays in Triage.
 
+A Blocked card has an Unblock button, and its menu offers Unblock too. It runs at once, like Send to Ready, through Hermes's own unblock. Hermes puts the task in Ready, or in Todo while a parent task is unfinished, and may start it right away. A toast says where it went.
+
 Every card's menu also offers Archive, which asks first. The confirmation lists what Hermes will do to this task:
 
 - A running task's run ends, and Hermes stops the worker process it started for the task on this computer. Hermes does not stop agents it did not start, such as ones your own plugins launched.

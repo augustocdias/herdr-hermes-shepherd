@@ -396,6 +396,17 @@ with connect_closing() as c:
               for table in ("task_comments", "task_events", "task_runs")))
 """), ["0"])
 
+    def test_unblock_moves_a_blocked_task_through_hermes_and_only_a_blocked_one(self):
+        task = self.create("t = kb.create_task(c, title='A')")
+        self.run_native(task, "kb.block_task(c, {t}, reason='waiting')")
+        code, reply = self.act(task, "unblock", "ready")
+        self.assertEqual(code, 2, reply)
+        code, reply = self.act(task, "unblock", "blocked")
+        self.assertEqual((code, reply["status"]), (0, "ready"), reply)
+        self.assertIn("unblocked", [e["kind"] for e in self.details(task)["events"]])
+        code, reply = self.act(task, "unblock", "ready")
+        self.assertEqual(code, 2, reply)
+
     def test_comments_are_added_to_unfinished_tasks_only(self):
         task = self.create("t = kb.create_task(c, title='A')")
         self.run_native(task, "kb.claim_task(c, {t})")

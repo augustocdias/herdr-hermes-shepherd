@@ -344,10 +344,22 @@ export default class Shepherd extends View {
   // Opens the task's details over the board; works for any task on the board, archived ones too.
   openTask(task) { openDetails({ board: this.data.board, id: task.id, db: this.data.db }); }
 
-  // The card's menu: Send to Todo or Ready for a Triage card, and Archive for any card.
+  // The card's menu: Send to Todo or Ready for a Triage card, Unblock for a Blocked one, and Archive for any card.
   openActions(task) {
-    openOverlay({ mod: MOD, kind: "popup", width: 320, height: task.status === "triage" ? 250 : 132,
+    openOverlay({ mod: MOD, kind: "popup", width: 320, height: task.status === "triage" ? 250 : task.status === "blocked" ? 210 : 132,
       props: { actions: { board: this.data.board, db: this.data.db, id: task.id, title: task.title, status: task.status } } });
+  }
+
+  // A Blocked card's own Unblock button: it acts at once, like Send to Ready, and a toast reports where Hermes put it.
+  unblock(task, cx) {
+    this.unblocking ??= new Set();
+    if (this.unblocking.has(task.id)) return;
+    this.unblocking.add(task.id);
+    cx.spawn(async (cx) => {
+      try { announce("unblock", task.title, await act({ board: this.data.board, id: task.id }, "unblock", task.status)); }
+      catch (e) { notify({ title: `Cannot unblock ${task.title}`, body: e?.message ?? String(e), level: "error" }); }
+      finally { this.unblocking.delete(task.id); cx.notify(); }
+    });
   }
 
   render(cx) {
@@ -411,6 +423,9 @@ export default class Shepherd extends View {
           .bg(tint(t[MARKER.running], "24")).text_size(11).font_medium().text_color(t[MARKER.running])
           .child(div().size(7).rounded(4).bg(t[MARKER.running])).child("Running")))
         .when(Boolean(task.parked_reason), (el) => el.child(div().text_size(11.5).text_color(t.muted).child(task.parked_reason)))
+        // Its own click must not also open the card.
+        .when(task.status === "blocked", (el) => el.child(h_flex().child(button(t, `card-unblock-${task.id}`,
+          this.unblocking?.has(task.id) ? "Unblocking…" : "Unblock", null, (_e, cx) => { cx.stop_propagation(); this.unblock(task, cx); }))))
         .child(h_flex().w_full().gap(6).items_end()
           .child(h_flex().flex_1().min_w(0).flex_wrap().gap(4)
             .when(Boolean(task.spec), (el) => el.child(chip(t, task.spec)))
@@ -1151,10 +1166,10 @@ class SessionSettings {
 const openDetails = (ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 1200, height: 0.85, props: { task: ref } });
 const openConfirm = (action, ref) => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 520, height: 340,
   props: { confirm: { action, board: ref.board, db: ref.db, id: ref.id } } });
-const VERB = { todo: "Send to Todo", ready: "Send to Ready", archive: "Archive", restore: "Restore to Triage", delete: "Delete permanently" };
+const VERB = { todo: "Send to Todo", ready: "Send to Ready", unblock: "Unblock", archive: "Archive", restore: "Restore to Triage", delete: "Delete permanently" };
 // Which status each action needs; archive takes any task that is not archived yet.
 const allowed = (action, state) => action === "archive" ? state !== "archived"
-  : action === "todo" || action === "ready" ? state === "triage" : state === "archived";
+  : action === "todo" || action === "ready" ? state === "triage" : action === "unblock" ? state === "blocked" : state === "archived";
 
 // Resolves with the helper's reply; rejects with Hermes's reason and, when refused, the task as it is now.
 async function act(ref, action, expected) {
@@ -1183,7 +1198,7 @@ class ActionMenu {
 
   close() {}
 
-  items() { return ["todo", "ready", "archive"].filter((action) => allowed(action, this.state)); }
+  items() { return ["todo", "ready", "unblock", "archive"].filter((action) => allowed(action, this.state)); }
 
   choose(action, cx) {
     if (this.busy) return;
@@ -1219,6 +1234,8 @@ class ActionMenu {
       .when(Boolean(this.error), (el) => el.child(errorBox(t, this.error)))
       .when(!this.error && this.state === "triage", (el) => el.child(div().px(8).pb(4).text_size(11.5).text_color(t.muted)
         .child("Leaving Triage hands the task to Hermes, which may start it right away. Hermes keeps it out of Ready while a parent task is unfinished.")))
+      .when(!this.error && this.state === "blocked", (el) => el.child(div().px(8).pb(4).text_size(11.5).text_color(t.muted)
+        .child("Unblock hands the task back to Hermes, which may start it right away. It goes to Todo instead of Ready while a parent task is unfinished.")))
       .children(items.map((action, i) => h_flex().id(`action-${action}`).h(31).px(8).flex_none().rounded(7).items_center()
         .text_color(t.foreground).when(i === this.at, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.choose(action, cx))

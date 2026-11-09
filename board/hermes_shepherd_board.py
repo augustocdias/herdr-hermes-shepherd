@@ -8,7 +8,7 @@ Usage:
   hermes-shepherd-board --sessions BOARD ID RULES      records the rules find in the task's text
   hermes-shepherd-board --check-rules RULES            problems in the record rules
   hermes-shepherd-board --check-profile NAME           why NAME is not a Hermes profile name, if it is not
-  hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, archive, restore or delete
+  hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, unblock, archive, restore or delete
   hermes-shepherd-board --comment BOARD ID BODY        add a comment to a task that is not done or archived
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
@@ -366,15 +366,16 @@ def archived(board):
 
 
 # What each action needs the task to be now, and the column it asks Hermes for.
-ACTIONS = {"todo": ("triage", "todo"), "ready": ("triage", "ready"), "restore": ("archived", "triage"),
-           "archive": (None, "archived"), "delete": ("archived", None)}
+ACTIONS = {"todo": ("triage", "todo"), "ready": ("triage", "ready"), "unblock": ("blocked", "ready"),
+           "restore": ("archived", "triage"), "archive": (None, "archived"), "delete": ("archived", None)}
 
 
 def act(board, task_id, action, expected):
     """Make one change through Hermes's own operations, if the task is still as the person saw it.
 
-    Todo, Ready and restore are Hermes's manual moves, made by its dashboard's own handler,
-    which applies Hermes's dependency gate and reports what refused the move. Archive and
+    Todo, Ready, unblock and restore are Hermes's manual moves, made by its dashboard's own handler,
+    which applies Hermes's dependency gate and reports what refused the move. Unblock asks for Ready,
+    which the handler turns into Hermes's unblock_task; Hermes may leave the task in Todo instead. Archive and
     delete are Hermes's archive and archived-only delete. Shepherd never writes a status.
     """
     kb, _, workflow = hermes()
