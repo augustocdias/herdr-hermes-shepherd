@@ -11,7 +11,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, panes, terminals, layout, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
+import { spaces, panes, terminals, focused, layout, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
 
 const MOD = "hermes-shepherd";
 // Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
@@ -46,7 +46,7 @@ const ASSETS_READY = (async () => {
     const path = `${appHome()}/mods/${MOD}/${name}.svg`;
     try {
       // The mod API cannot stat or unlink, and writeTextFile writes through a symlink, so `test -L` and `rm` do.
-      const link = (await exec("test", ["-L", path])).code === 0;
+      const link = (await exec("sh", ["-c", 'test -L "$1"', "sh", path])).code === 0;
       if (link) await exec("rm", ["-f", path]);
       const current = link ? null : await readTextFile(path);
       if (current !== text) await writeTextFile(path, text, current);
@@ -1492,7 +1492,11 @@ class ShepherdPanel {
     if (status.term) {
       this.phase = null;
       // The terminal block looks its terminal up by name when it shows, so show it again once Core lists the new one.
-      if (this.reshow && findNode(layout(), PANEL_BLOCK)) { run("layout.hide", { id: PANEL_BLOCK }); run("layout.show", { id: PANEL_BLOCK }); }
+      if (this.reshow && findNode(layout(), PANEL_BLOCK)) {
+        const hadFocus = [PANEL_TERMINAL, status.term.address].includes(focused()?.terminal);
+        run("layout.hide", { id: PANEL_BLOCK }); run("layout.show", { id: PANEL_BLOCK });
+        if (hadFocus) run("pane.focus", { terminal: PANEL_TERMINAL });
+      }
       this.reshow = false;
       if (status.kind === "exited" && this.why?.key !== `${status.term.address}:${status.code}`) this.readWhy(status.term.address, status.code, cx);
     } else if (this.phase === null) this.check(cx);
@@ -1551,6 +1555,24 @@ class ShepherdPanel {
 
   // Exited: the shell starts Hermes again on Enter. Gone or failed: start a new terminal once.
   restart(status, cx) {
+    if (!findNode(layout(), PANEL_BLOCK)) {
+      if (this.repairing) return;
+      this.repairing = true; this.repairError = "";
+      cx.spawn(async (cx) => {
+        try {
+          const tree = JSON.parse(JSON.stringify(layout()));
+          const panel = findNode(tree, PANEL);
+          if (panel?.type !== "column") throw new Error(`Add the "${PANEL}" column from the README to a personal layout first.`);
+          panel.children.push({ id: PANEL_BLOCK, type: "block", content: { terminal: PANEL_TERMINAL } });
+          // The CLI acknowledges layout.set; run() cannot report a refused edit to a shipped layout.
+          const result = await exec("herdr-app", ["do", "layout.set", JSON.stringify({ layout: tree })]);
+          if (result.code !== 0) throw new Error(hcReply(result)?.error || result.stderr.trim() || "Cannot restore the panel.");
+          this.phase = null; this.error = ""; this.reshow = true;
+        } catch (e) { this.repairError = `${e?.message ?? e} Use a personal layout (layout.clone), then try again.`; }
+        finally { this.repairing = false; cx.notify(); }
+      });
+      return;
+    }
     if (status.kind === "exited") cx.spawn(async () => { try { await writeProfile(savedRules().profile); await hc(["keys", status.term.address, "enter"]); } catch {} });
     else { this.phase = null; this.error = ""; }
   }
@@ -1563,13 +1585,15 @@ class ShepherdPanel {
     const profile = savedRules().profile;
     const using = status.term?.labels?.[RUNNING_PROFILE];
     const later = using && using !== profile ? ` Settings say \`${profile}\`; it applies at the next start or Restart.` : "";
-    const [text, action] = {
+    const missing = !findNode(layout(), PANEL_BLOCK);
+    let [text, action] = {
       checking: [`Starting Hermes (\`${profile}\`)…`], launching: [`Starting Hermes (\`${profile}\`)…`],
       running: [`Running.${later}${this.profileError ? ` Cannot write the profile file: ${this.profileError}` : ""}`],
       exited: [`Hermes (\`${using ?? profile}\`) exited with code ${status.code}${why}.${later}`, "Restart"],
       gone: ["The Shepherd terminal is gone.", "Start again"],
       failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
     }[status.kind];
+    if (missing) { text = this.repairError || "The chat block is missing. Restore it in this personal layout."; action = this.repairing ? null : "Restore panel"; }
     const small = (id, label, onClick, primary) => h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).text_size(12)
       .border_1().border_color(primary ? t.accent : t.input).when(primary, (el) => el.bg(t.accent).font_semibold())
       .text_color(primary ? t.accent_foreground : t.foreground)
@@ -1580,7 +1604,7 @@ class ShepherdPanel {
       .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Shepherd"))
       .child(div().flex_none().px(6).rounded(4).bg(t.raised).font_family(MONO).text_size(11).text_color(t.muted).child(using ?? profile))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(action ? t.blocked : t.muted)
-        .child(findNode(layout(), PANEL_BLOCK) ? text : `${text} Add the "${PANEL_BLOCK}" block back to your layout (see the README).`))
+        .child(text))
       .when(Boolean(action), (el) => el.child(small("shepherd-restart", action, (cx) => this.restart(status, cx), true)))
       .child(small("shepherd-hide", "Hide", () => run("layout.hide", { id: PANEL }), false));
   }

@@ -61,7 +61,7 @@ Filters are global: every Shepherd tab in every space uses the same Repository a
 
 ### The Shepherd panel
 
-The Shepherd panel is a terminal running your existing Hermes coordinator, `hermes -p coordinator` unless Settings names another profile. It is part of your layout, like the Files and Changes panels, and Shepherd never edits your layout. To get it, clone the layout you use and add this block next to the Files and Changes `panel` column, usually in the row that holds the tab (`work-body` in Herdr's main layout):
+The Shepherd panel is a terminal running your existing Hermes coordinator, `hermes -p coordinator` unless Settings names another profile. It is part of your layout, like the Files and Changes panels. Shepherd changes the layout only when you press Restore panel to replace its missing terminal block. To get it, clone the layout you use and add this block next to the Files and Changes `panel` column, usually in the row that holds the tab (`work-body` in Herdr's main layout):
 
 ```json
 { "id": "shepherd", "type": "column", "hidden": true, "size": { "px": 460 }, "min": 280, "max": 1100,
@@ -85,13 +85,24 @@ Showing and hiding the panel belongs to your layout, as it does for Files and Ch
 
 Pick any free key; a binding in the `terminal` section would win over it while a terminal has focus. The layout remembers the panel's width when you drag its edge, and whether it is shown, across restarts.
 
+If `herdr-app commands` lists a `focus` argument for `layout.toggle`, use this binding instead:
+
+```json
+"ctrl-shift-y": {
+  "command": "layout.toggle",
+  "args": { "id": "shepherd", "focus": "shepherd-terminal" }
+}
+```
+
+This opens and focuses a hidden panel. If the panel is visible but focus is elsewhere, it focuses the coordinator without hiding it. Pressing the shortcut while the coordinator has the keyboard hides the panel. Shepherd keeps that focus when its newly started terminal attaches.
+
 When the panel shows and Herdr Core has no terminal named `hermes-shepherd`, Shepherd starts one in your home folder, for example the first time or after a reboot. It runs the `hermes` on Core's PATH inside a small `sh` loop, so your own wrapper, jail and approval settings apply. Shepherd creates no profile and changes no Hermes settings. There is one terminal for every space and tab, and hiding the panel, switching tabs or spaces, and restarting the App leave it running.
 
 When Hermes exits, the terminal stays open: it prints the exit code, and the panel's header shows the code and Hermes's last line with a Restart button. Restart, or Enter in the terminal, starts Hermes again in the same terminal. Shepherd never restarts it on its own. Without the profile, Hermes exits with `Profile 'coordinator' does not exist`.
 
 The Hermes profile field in Settings sets the profile the panel opens; it is `coordinator` until you save another. Save checks it with Hermes's own profile-name rule and creates no profile. Shepherd passes it to `hermes` as one argument after `-p`; the shell does not parse it. A saved change applies the next time Hermes starts, by Restart, Enter in the terminal or a new terminal. A running conversation is never stopped for it: while it runs with the old profile, the header names both.
 
-Herdr App deletes a layout's terminal block when that terminal ends, and rewrites the rest of the layout file around it; in Herdr App 0.1.11 it also merged the Files and Changes column into its parent. That is why the terminal outlives Hermes. If something ends the terminal anyway, such as `hc kill hermes-shepherd` or a Core stop or restart while the App is open, Shepherd removes its finished record, and the header says the terminal is gone. Press Start again, then put your layout file back as it was (keep a copy of it). The App may keep a size it saved for the rewritten layout, so the header can come back taller; drag its lower edge back.
+Herdr App can delete the layout's terminal block when its terminal ends, including after a full Core stop/start. A graceful `hc server restart` keeps the terminal running. If the block disappears, press Restore panel in the header. Shepherd adds `shepherd-terminal` back to the existing `shepherd` column, leaves the rest of the layout intact, and reconnects to a live conversation or starts a new terminal if none exists. Repair requires a personal layout. If Herdr refuses an edit to a shipped layout, clone it with `layout.clone`, then press Restore panel again. If the block is still present but the terminal ended, press Start again.
 
 After upgrading from an earlier Shepherd, end any old `hermes-coordinator` terminals, `hc attach` splits and `hermes-shepherd` terminals once, so the panel starts the current runner.
 
@@ -183,6 +194,8 @@ Run the helpers' tests with the Hermes Python. They build boards, cron jobs and 
 ```sh
 "$HERMES_PYTHON" -m unittest discover tests
 ```
+
+Run the panel recovery checks with `node --test tests/panel.test.mjs`. They cover restoring the missing block without replacing the rest of the layout or restarting a live conversation, and handling a refused layout edit.
 
 `tests/seed_board.py` fills an empty temporary `HERMES_HOME` with a demo board for checks in a private Herdr App. It refuses a home that already has a board.
 
