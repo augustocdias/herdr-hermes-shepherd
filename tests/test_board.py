@@ -396,6 +396,21 @@ with connect_closing() as c:
               for table in ("task_comments", "task_events", "task_runs")))
 """), ["0"])
 
+    def test_comments_are_added_to_unfinished_tasks_only(self):
+        task = self.create("t = kb.create_task(c, title='A')")
+        self.run_native(task, "kb.claim_task(c, {t})")
+        self.assertEqual(self.details(task)["status"], "running")
+        code, reply = self.helper("--comment", "default", task, "  Looks **good**  ")
+        self.assertEqual(code, 0, reply)
+        self.assertEqual([(c["author"], c["body"]) for c in reply["task"]["comments"]], [("user", "Looks **good**")])
+        self.assertEqual(self.helper("--comment", "default", task, "  ")[0], 1)
+        for close in ("kb.complete_task(c, {t}, result='ok', force=True)", "kb.archive_task(c, {t})"):
+            self.run_native(task, close)
+            code, reply = self.helper("--comment", "default", task, "late")
+            self.assertEqual(code, 2, reply)
+            self.assertEqual(len(reply["task"]["comments"]), 1)
+
+
 
 if __name__ == "__main__":
     unittest.main()

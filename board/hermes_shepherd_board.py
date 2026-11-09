@@ -9,6 +9,7 @@ Usage:
   hermes-shepherd-board --check-rules RULES            problems in the record rules
   hermes-shepherd-board --check-profile NAME           why NAME is not a Hermes profile name, if it is not
   hermes-shepherd-board --act BOARD ID ACTION STATUS   todo, ready, archive, restore or delete
+  hermes-shepherd-board --comment BOARD ID BODY        add a comment to a task that is not done or archived
 
 NAME selects the board whose slug or display name equals it (the Shepherd tab's
 name). It follows `--`, so a tab named like a flag still names a board; a NAME that does
@@ -410,6 +411,30 @@ def act(board, task_id, action, expected):
                 "task": details(conn, task_id) if after else None}
 
 
+# The author Shepherd writes comments as: the name Hermes's own CLI uses for a person without a profile.
+AUTHOR = "user"
+CLOSED = ("done", "archived")
+
+
+def comment(board, task_id, body):
+    """Add a comment through Hermes's add_comment, unless the task is done or archived."""
+    kb, _, _ = hermes()
+    if not body.strip():
+        raise RuntimeError("The comment is empty.")
+    _, connection = open_board(board)
+    with connection as conn:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            raise RuntimeError(f"No task {task_id} on this board.")
+        if task.status in CLOSED:
+            raise Refused(f"Not added: the task is {task.status}, and Hermes Shepherd comments only on unfinished tasks.",
+                          details(conn, task_id))
+        # shortcut: the status check and the write are separate calls, so a task finishing in between still gets
+        # the comment; upgrade if Hermes gains a guarded add_comment.
+        kb.add_comment(conn, task_id, AUTHOR, body)
+        return {"done": "comment", "task": details(conn, task_id)}
+
+
 def check_profile(name):
     """The Shepherd panel's profile, checked by Hermes's own rule; nothing is created or read from disk."""
     from hermes_cli.profiles import validate_profile_name
@@ -431,6 +456,7 @@ COMMANDS = {
     "--check-profile": (1, check_profile),
     "--archived": (1, archived),
     "--act": (4, act),
+    "--comment": (3, comment),
 }
 
 

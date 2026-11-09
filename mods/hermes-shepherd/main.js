@@ -483,7 +483,8 @@ export default class Shepherd extends View {
 
 // One task's details: opened by the board as a dialog with props { task: { board, id, db } }.
 // Shows the task's native status, assignment and context, its description and comments, and its events,
-// runs and full history on their own tabs, as Markdown. It edits the description while Hermes allows it.
+// runs and full history on their own tabs, as Markdown. It edits the description while Hermes allows it,
+// and adds comments to tasks that are not done or archived.
 // The helper rechecks eligibility and freshness when saving; a refused save keeps the draft.
 // It shares this file with the board because Herdr refuses a relative import that resolves outside the mod folder,
 // and Home Manager links main.js on its own so the folder stays writable for the icons.
@@ -496,6 +497,22 @@ const TABS = [{ key: "details", label: "Details" }, { key: "events", label: "Eve
   { key: "history", label: "History" }, { key: "sessions" }];
 // Hermes adds a `commented` event for every comment; the comment itself is shown instead.
 const shownEvents = (task) => task.events.filter((e) => e.kind !== "commented");
+// Comments go only on tasks that are still open; the helper checks again when adding one.
+const commentable = (task) => !["done", "archived"].includes(task.status);
+
+// Ctrl+Enter inserts a newline (a change) before it submits; onSubmit runs on the text from before that newline.
+function onCtrlEnter(state, onSubmit) {
+  let typed = [state.value(), state.value()];
+  state.on("change", () => { typed = [typed[1], state.value()]; });
+  state.on("submit", (e, cx) => {
+    if (!e.secondary) return;
+    const [before, now] = typed;
+    const at = [...now].findIndex((c, i) => c !== before[i]);
+    if (now.length === before.length + 1 && now[at] === "\n" && now.slice(at + 1) === before.slice(at)) state.set_value(before);
+    onSubmit(cx);
+  });
+}
+
 // Markdown with each pipe table in its own sideways-scrolling box, wide enough that long cells do not
 // squeeze the columns into slivers. Code fences are left alone.
 // shortcut: only tables whose rows start with "|" are found; one written without outer pipes stays squeezed.
@@ -586,6 +603,12 @@ class TaskDetails {
     this.task = null; this.error = ""; this.notice = ""; this.saving = false; this.open = true;
     this.scan = null; this.launches = {}; this.shown = RECORDS_SHOWN; this.at = 0; // records tab: last scan, launch results by record, rows listed, selected row
     this.draft = null; this.base = null; // the editor's text state and the version it started from
+    // The comment box: Ctrl+Enter or Comment adds the text through Hermes; a refusal keeps it in the box.
+    // shortcut: the comment travels as one argument, which Linux caps at 128 KiB, and it is lost when the dialog closes.
+    this.reply = TextareaState.new({ placeholder: "Add a comment in Markdown", rows: 3 });
+    this.reply.set_auto_grow(3, 12);
+    onCtrlEnter(this.reply, (cx) => this.comment(cx));
+    this.posting = false; this.replyError = ""; // while a comment is sent, and why the last one was not added
     this.key = `${this.ref.board}:${this.ref.id}`;
     this.loads = 0;
     this.load(cx);
@@ -593,7 +616,7 @@ class TaskDetails {
   }
 
   // Without an editor open, the stored draft is the latest one; store() would drop it.
-  close() { this.open = false; if (this.draft) this.store(); }
+  close() { this.open = false; if (this.draft) this.store(); this.reply.release(); }
 
   // Replies to overlapping loads can arrive out of order; only the latest one counts.
   load(cx) {
@@ -625,16 +648,7 @@ class TaskDetails {
       const kept = this.stored();
       this.base = kept?.base ?? this.task.version;
       this.draft = TextareaState.new({ value: kept?.text ?? this.task.body, placeholder: "Describe the task in Markdown" });
-      // Ctrl+Enter inserts a newline (a change) before it submits; save the text from before that newline.
-      this.typed = [this.draft.value(), this.draft.value()];
-      this.draft.on("change", () => { this.typed = [this.typed[1], this.draft.value()]; });
-      this.draft.on("submit", (e, cx) => {
-        if (!e.secondary || !this.task.editable) return;
-        const [before, now] = this.typed;
-        const at = [...now].findIndex((c, i) => c !== before[i]);
-        if (now.length === before.length + 1 && now[at] === "\n" && now.slice(at + 1) === before.slice(at)) this.draft.set_value(before);
-        this.save(cx);
-      });
+      onCtrlEnter(this.draft, (cx) => { if (this.task.editable) this.save(cx); });
     }
     this.editing = true; this.notice = "";
     this.draft.focus();
@@ -669,6 +683,21 @@ class TaskDetails {
         this.handle.focus();
       } catch (e) { this.notice = e?.message ?? String(e); this.draft.focus(); }
       finally { this.saving = false; cx.notify(); }
+    });
+  }
+
+  comment(cx) {
+    const text = this.reply.value();
+    if (this.posting || !text.trim()) return;
+    this.posting = true; this.replyError = "";
+    cx.spawn(async (cx) => {
+      try {
+        const { code, reply } = await call(["--comment", this.ref.board, this.ref.id, text]);
+        if (reply.task) this.task = reply.task;
+        if (code !== 0) throw new Error(reply.error || `${HELPER} exited with code ${code}`);
+        this.reply.set_value("");
+      } catch (e) { this.replyError = e?.message ?? String(e); }
+      finally { this.posting = false; cx.notify(); }
     });
   }
 
@@ -756,7 +785,14 @@ class TaskDetails {
           .child(editor))
         .when(Boolean(task.result), (el) => el.child(v_flex().gap(8).child(heading(t, "Result")).child(markdown("details-result", task.result))))
         .child(v_flex().gap(12).child(heading(t, `Comments · ${task.comments.length}`))
-          .children(this.history(task, t, markdown, ["comments"]))))
+          .children(this.history(task, t, markdown, ["comments"]))
+          .when(commentable(task), (el) => el.child(v_flex().gap(8)
+            .child(Textarea.new(this.reply).w_full().p(10).rounded(8).border_1().border_color(t.input)
+              .bg(t.chrome).text_color(t.foreground).text_size(13))
+            .when(Boolean(this.replyError), (el) => el.child(banner(this.replyError, t.blocked)))
+            .child(h_flex().gap(8).items_center()
+              .child(div().flex_1().text_size(11.5).text_color(t.muted).child("Markdown. Ctrl+Enter adds it. Hermes workers read comments."))
+              .child(button(t, "details-comment", this.posting ? "Adding…" : "Comment", "primary", (_e, cx) => this.comment(cx))))))))
       .child(v_flex().id("details-aside").w(240).flex_none().h_full().px(18).pt(18).pb(20).gap(14).overflow_y_scrollbar()
         .border_l(1).border_color(t.border).bg(t.background)
         .children([

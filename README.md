@@ -1,6 +1,6 @@
 # Hermes Shepherd
 
-A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. It changes the board only through the description edit and the task actions described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
+A Herdr App tab that shows a live view of a Hermes kanban board. It reads and edits the board only through the installed Hermes package's own task functions. It changes the board only through the description edit, comments and the task actions described below. Like any `hermes kanban` command, opening a board may apply Hermes's own schema migrations.
 
 ## What the tab shows
 
@@ -26,6 +26,10 @@ Descriptions, comments and run summaries are rendered as Markdown exactly as Her
 You can edit a task's description only while its Hermes status is Triage. Earlier states and runs do not matter: a task that ran before and was moved back to Triage, or restored from the archive, can be edited. A task in any other column is locked, even if it never ran. Archived tasks are read-only.
 
 Save checks again, right before writing, that the task is still in Triage and that its description is still the one you began editing. If either check fails, nothing is written and your draft stays in the editor. When someone else changed the description, close the editor to read the new text; saving again then replaces it with your draft. A draft survives closing the dialog until you save or discard it. If the task leaves Triage first, the draft opens read-only so you can copy or discard it. Hermes cannot make that check and its write one transaction, so a task that leaves Triage in the instant between them still gets the save through; the dialog then warns that a worker may have the earlier description.
+
+### Comments
+
+Any task that is not Done or archived takes comments, running or not. Write one in the box under the comments and press Comment or Ctrl+Enter. Hermes stores it with the author `user`, as its own CLI does for a person without a profile, and Hermes workers read the comments of their task. Save checks again that the task is not Done or archived; if it is, nothing is added and the text stays in the box. A comment that is not added is lost when the dialog closes.
 
 ### Task actions
 
