@@ -32,6 +32,7 @@ const ICONS = {
   archive: SVG('<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>'),
   // Glyphs inside Shepherd's own views.
   close: SVG('<path d="M18 6 6 18M6 6l12 12"/>'),
+  copy: SVG('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>'),
   chevron: SVG('<path d="m6 9 6 6 6-6"/>'),
   refresh: SVG('<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>'),
   restore: SVG('<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/>'),
@@ -399,10 +400,10 @@ export default class Shepherd extends View {
         // Its own click must not also open the card.
         .when(task.status === "blocked", (el) => el.child(h_flex().child(button(t, `card-unblock-${task.id}`,
           this.unblocking?.has(task.id) ? "Unblocking…" : "Unblock", null, (_e, cx) => { cx.stop_propagation(); this.unblock(task, cx); }))))
-        .child(h_flex().w_full().gap(6).items_end()
-          .child(h_flex().flex_1().min_w(0).flex_wrap().gap(4)
-            .when(Boolean(task.spec), (el) => el.child(chip(t, task.spec)))
-            .when(Boolean(task.repository), (el) => el.child(chip(t, short(task.repository ?? "")))))
+        .child(h_flex().w_full().gap(12).items_end()
+          .child(h_flex().flex_1().min_w(0).overflow_hidden().flex_wrap().gap(4)
+            .when(Boolean(task.spec), (el) => el.child(chip(t, task.spec).max_w_full()))
+            .when(Boolean(task.repository), (el) => el.child(chip(t, short(task.repository ?? "")).max_w_full())))
           .child(div().flex_none().max_w(140).truncate().text_size(11).text_color(task.assignee ? t.muted : t.dim).child(task.assignee || "Unassigned")));
     };
     const column = (c, i) => v_flex().id(`col-${c.key}`).relative().flex_1().min_w(COLUMN).h_full().min_h(0)
@@ -717,6 +718,10 @@ class TaskDetails {
     const bar = titleBar(t, "details", [
       div().flex_none().font_family(MONO).text_size(12).text_color(t.muted).child("task"),
       div().flex_none().font_family(MONO).text_size(12).text_color(t.foreground).child(this.ref.id),
+      iconButton(t, "details-copy-id", "copy", "Copy ticket ID", (_e, cx) => {
+        cx.write_to_clipboard(this.ref.id);
+        notify({ title: "Ticket ID copied", body: this.ref.id });
+      }),
     ], close);
 
     if (task && this.tab === "sessions") this.scanSessions(cx);

@@ -5,7 +5,7 @@ A Herdr App tab that shows a live view of a Hermes kanban board. It reads and ed
 ## What the tab shows
 
 - The board's columns in the order Hermes's workflow defines. Hermes's `scheduled` status appears as Parked, with the reason given when the task was parked.
-- Every task that is not archived, including all of Done. Each card shows the title, a round status marker, and the assigned profile or Unassigned.
+- Every task that is not archived, including all of Done. Each card shows the title, a round status marker, and the assigned profile or Unassigned. Spec and repository labels truncate to fit beside the assignee.
 - Repository and Spec filters, which default to All. A task's spec is its Hermes `tenant`. Its repository is the folder of its native Hermes `dir:` workspace. Tasks without that metadata stay visible under All and appear under None.
 - The time of the last successful read. If a read fails, a banner shows the error and the last successful read stays on screen.
 
@@ -22,6 +22,8 @@ Clicking a card, or pressing Enter on it, opens the task in a dialog over the bo
 - The records tab (see Records and rules).
 
 Descriptions, comments and run summaries are rendered as Markdown exactly as Hermes stores them. A table whose rows start with `|` gets its own box, as wide as its contents need, that scrolls sideways with the scrollbar under it, Shift+wheel or a sideways swipe. A plain wheel scrolls the page. The dialog follows the board, so a task that changes while it is open shows its new state. Esc or the close button dismisses it.
+
+The copy button beside the ticket ID in the dialog's title bar copies the full ID to the clipboard and shows a confirmation.
 
 You can edit a task's description only while its Hermes status is Triage. Earlier states and runs do not matter: a task that ran before and was moved back to Triage, or restored from the archive, can be edited. A task in any other column is locked, even if it never ran. Archived tasks are read-only.
 
