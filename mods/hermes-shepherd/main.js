@@ -1,7 +1,7 @@
 // Hermes Shepherd: a view of a Hermes kanban board, opened as a tab.
 // The board is the one named like the tab (slug or display name); otherwise Hermes's
 // default board, and the toolbar says so. Repository and spec filters are global.
-// In a layout block with props { panel } it is the Shepherd panel's header (ShepherdPanel).
+// In a layout block with props { panel } it is the full-height native Shepherd chat.
 // Opened as a popup with props { menu } it is the board's own filter picker; with props { cron }
 // it is the read-only cron jobs dialog; as a dialog with props { task } it is that task's details (TaskDetails);
 // with props { settings } it is the Settings dialog for the record rules and the records tab name (SessionSettings).
@@ -11,7 +11,8 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextView, TextareaState, Textarea, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, panes, terminals, focused, layout, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
+import { spaces, panes, exec, hc, home, appHome, readTextFile, writeTextFile, run, watchFolder, theme, settings, shared, setShared, props, openOverlay, closeOverlay, nextCommand, notify } from "herdr";
+import { ShepherdChat } from "./chat.js";
 
 const MOD = "hermes-shepherd";
 // Herdr App draws nothing for an SVG that is a symlink (Home Manager installs files as store symlinks),
@@ -108,44 +109,8 @@ const describe = (filter) => filter == null ? "All" : filter === "" ? "None" : s
 const count = (cols) => cols.reduce((n, c) => n + c.tasks.length, 0);
 const activeTab = () => spaces().find((s) => s.active)?.tabs.find((t) => t.active)?.id ?? null;
 
-// The Shepherd panel is a block the person adds to their own layout (README: The Shepherd panel):
-// a header (this mod with props { panel }) above a `{ "terminal": PANEL_TERMINAL }` block.
-// That one terminal runs the user's own `hermes -p <profile>` through the `hermes` on Core's PATH,
-// so their wrapper and jail apply. It serves every space and is restarted only by the person.
-// Herdr App deletes a layout's terminal block, and rewrites the layout around it, when the terminal
-// ends, so a shell keeps the terminal alive after Hermes exits: it records the exit code as a label
-// and starts Hermes again only on Enter or the panel's Restart.
-const PANEL = "shepherd"; // layout node ids the README's snippet uses
-const PANEL_BLOCK = "shepherd-terminal";
-const PANEL_TERMINAL = "hermes-shepherd";
-const PROFILE = "coordinator"; // the Hermes profile the Shepherd panel opens until Settings saves another
-const EXIT = "hermes-shepherd.exit"; // label: Hermes's last exit code, absent while it runs
-const RUNNING_PROFILE = "hermes-shepherd.profile"; // label: the profile the runner last started Hermes with
-// The profile Settings saved, as a hidden file the runner reads at every start, so Enter and Restart pick up a change.
-// Hidden files in the mod folder do not reload the mod.
-const profileFile = () => `${appHome()}/mods/${MOD}/.profile`;
-const writeProfile = async (profile) => {
-  let current = null;
-  try { current = await readTextFile(profileFile()); } catch {}
-  if (current !== profile) await writeTextFile(profileFile(), profile, current);
-};
-// $1 is the profile file; the rest is the hermes command. The profile is one argument after -p; the shell does not parse it.
-const RUNNER = `trap : INT QUIT
-file=$1; shift
-while :; do
-  profile=$(cat "$file" 2>/dev/null); [ -n "$profile" ] || profile=${PROFILE}
-  hc label "$HC_TERMINAL_ID" ${EXIT}= ${RUNNING_PROFILE}="$profile" >/dev/null 2>&1
-  "$@" -p "$profile"; code=$?
-  # A crashed TUI can leave raw mode on, where Enter never ends \`read\`.
-  stty sane 2>/dev/null
-  # Drop keys typed while Hermes ran, so only a new Enter starts it again; the label then offers Restart.
-  # dash has no \`read -t\`, so read without blocking through stty.
-  old=$(stty -g 2>/dev/null) && { stty -icanon min 0 time 0; cat >/dev/null; stty "$old"; }
-  hc label "$HC_TERMINAL_ID" ${EXIT}=$code >/dev/null 2>&1
-  printf '\\n[Hermes exited with code %s. Press Enter, or Restart in the Shepherd panel, to start it again.]\\n' "$code"
-  until read -r _; do sleep 1; done
-done`;
-const findNode = (node, id) => node?.id === id ? node : (node?.children ?? []).reduce((hit, c) => hit ?? findNode(c, id), null);
+const PANEL = "shepherd";
+const PROFILE = "coordinator";
 // `hc --json` prints its reply on stdout, or `{ error: { message, hint } }` on stderr.
 const hcReply = (result) => { for (const text of [result.stdout, result.stderr]) { try { return JSON.parse(text); } catch {} } return null; };
 const hcError = (result, reply) => reply?.error?.message ?? (result.stderr.trim() || `hc exited with code ${result.code}`);
@@ -179,7 +144,7 @@ export default class Shepherd extends View {
   init(_props, cx) {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
-    if (props()?.panel) { this.details = new ShepherdPanel(); this.details.init(cx); return; }
+    if (props()?.panel) { this.details = new ShepherdChat(() => savedRules().profile); this.details.init(cx); return; }
     const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived
       : props()?.create ? CreateTask : null;
     if (Overlay) { this.details = new Overlay(); this.details.init(cx); return; }
@@ -1067,8 +1032,6 @@ class SessionSettings {
         if (JSON.stringify(this.current()) !== JSON.stringify(settings)) { this.notice = "Not saved: the settings changed while they were checked. Save again."; return; }
         setShared(RULES, settings);
         this.clean = JSON.stringify(settings);
-        // The panel's runner reads the file at its next start; a failed write is reported, the setting is kept.
-        try { await writeProfile(settings.profile); } catch (e) { this.notice = `Saved, but the panel cannot read the new profile yet: ${e?.message ?? e}`; return; }
         this.malformed = null; this.notice = "Saved.";
       } catch (e) { this.notice = `Not saved: ${e?.message ?? e}`; }
       finally { this.saving = false; cx.notify(); }
@@ -1134,7 +1097,7 @@ class SessionSettings {
         div().text_size(12).text_color(t.muted).child("Shared by every Shepherd tab")], (_e, cx) => this.leave(cx)))
       .child(v_flex().id("rules").flex_1().min_h(0).px(20).pt(6).pb(16).gap(10).overflow_y_scrollbar()
         .child(v_flex()
-          .child(setting("Hermes profile", "The Shepherd panel runs `hermes -p <profile>`. A change applies at its next start or Restart.", this.profile))
+          .child(setting("Hermes profile", "The native Shepherd chat connects to this profile's existing gateway. Changing it preserves each profile's conversation and draft.", this.profile))
           .child(setting("Records tab name", "The task popup's tab that lists the records the rules find.", this.name)))
         .child(v_flex().pt(12).gap(6)
           .child(heading(t, "Record rules"))
@@ -1466,146 +1429,3 @@ class Archived {
   }
 }
 
-// The Shepherd panel's header (props { panel }): starts the panel terminal when the panel shows and none exists,
-// says whether Hermes runs or how it ended, and offers the deliberate restart. Nothing restarts on its own.
-// The terminal is found by its name, never by a stored address: Core reuses addresses after a restart.
-class ShepherdPanel {
-  // phase: null (follow the live terminal), "checking", "launching", "gone" (ended; waits for Start again) or "failed".
-  init(_cx) { this.phase = null; this.error = ""; this.why = null; this.reshow = false; }
-
-  // Nothing to release: the hermes-shepherd terminal outlives the header on purpose (--no-parent).
-  close() {}
-
-  live() { return terminals().find((t) => t.state === "live" && t.name === PANEL_TERMINAL); }
-
-  status() {
-    const term = this.live();
-    if (term) {
-      const code = term.labels?.[EXIT];
-      return code ? { kind: "exited", code, term } : { kind: "running", term };
-    }
-    return { kind: this.phase ?? "checking" };
-  }
-
-  ensure(cx) {
-    const status = this.status();
-    if (status.term) {
-      this.phase = null;
-      // The terminal block looks its terminal up by name when it shows, so show it again once Core lists the new one.
-      if (this.reshow && findNode(layout(), PANEL_BLOCK)) {
-        const hadFocus = [PANEL_TERMINAL, status.term.address].includes(focused()?.terminal);
-        run("layout.hide", { id: PANEL_BLOCK }); run("layout.show", { id: PANEL_BLOCK });
-        if (hadFocus) run("pane.focus", { terminal: PANEL_TERMINAL });
-      }
-      this.reshow = false;
-      if (status.kind === "exited" && this.why?.key !== `${status.term.address}:${status.code}`) this.readWhy(status.term.address, status.code, cx);
-    } else if (this.phase === null) this.check(cx);
-  }
-
-  // terminals() lists live terminals only, and a new one shows up a little after `hc run` returns, so Core is asked.
-  // No terminal: start one. A finished one is removed at once and waits for Start again: a terminal block finds
-  // finished terminals by name too, and Herdr App deletes a block that shows one.
-  check(cx) {
-    this.phase = "checking";
-    cx.spawn(async (cx) => {
-      let got = null;
-      try { got = await hc(["get", PANEL_TERMINAL, "--json"]); } catch {}
-      const term = got?.code === 0 ? hcReply(got) : null;
-      if (term?.state === "live") cx.timer.after(1000, (cx) => { if (this.phase === "checking") this.phase = null; cx.notify(); });
-      else if (term) { try { await hc(["rm", term.address]); } catch {} this.phase = "gone"; }
-      else this.launch(cx);
-      cx.notify();
-    });
-  }
-
-  launch(cx) {
-    this.phase = "launching";
-    cx.spawn(async (cx) => {
-      try {
-        // Without the file the runner falls back to the default profile, so start anyway and say so.
-        this.profileError = "";
-        try { await writeProfile(savedRules().profile); } catch (e) { this.profileError = e?.message ?? String(e); }
-        let result;
-        try { result = await hc(["run", "--bg", "--json", "--no-parent", "--name", PANEL_TERMINAL, "--cwd", home(),
-          "--", "sh", "-c", RUNNER, PANEL_TERMINAL, profileFile(), "hermes"]); }
-        catch (e) { throw new Error(`Cannot run hc: ${e?.message ?? e}`); }
-        if (result.code !== 0) {
-          // Another screen's panel may have started it first: names are unique among live terminals.
-          const got = await hc(["get", PANEL_TERMINAL, "--json"]);
-          if (!(got.code === 0 && hcReply(got)?.state === "live")) throw new Error(hcError(result, hcReply(result)));
-        }
-        this.phase = null; this.reshow = true;
-      } catch (e) { this.phase = "failed"; this.error = e?.message ?? String(e); }
-      cx.notify();
-    });
-  }
-
-  // The last line Hermes printed before it exited usually says why, e.g. a missing profile or `hermes: command not found`.
-  readWhy(address, code, cx) {
-    const why = this.why = { key: `${address}:${code}`, line: "" };
-    cx.spawn(async (cx) => {
-      try {
-        const read = await hc(["read", address, "--lines", "12"]);
-        const lines = read.code === 0 ? read.stdout.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("[Hermes exited")) : [];
-        why.line = lines.pop() ?? "";
-      } catch {}
-      cx.notify();
-    });
-  }
-
-  // Exited: the shell starts Hermes again on Enter. Gone or failed: start a new terminal once.
-  restart(status, cx) {
-    if (!findNode(layout(), PANEL_BLOCK)) {
-      if (this.repairing) return;
-      this.repairing = true; this.repairError = "";
-      cx.spawn(async (cx) => {
-        try {
-          const tree = JSON.parse(JSON.stringify(layout()));
-          const panel = findNode(tree, PANEL);
-          if (panel?.type !== "column") throw new Error(`Add the "${PANEL}" column from the README to a personal layout first.`);
-          panel.children.push({ id: PANEL_BLOCK, type: "block", content: { terminal: PANEL_TERMINAL } });
-          // The CLI acknowledges layout.set; run() cannot report a refused edit to a shipped layout.
-          const result = await exec("herdr-app", ["do", "layout.set", JSON.stringify({ layout: tree })]);
-          if (result.code !== 0) throw new Error(hcReply(result)?.error || result.stderr.trim() || "Cannot restore the panel.");
-          this.phase = null; this.error = ""; this.reshow = true;
-        } catch (e) { this.repairError = `${e?.message ?? e} Use a personal layout (layout.clone), then try again.`; }
-        finally { this.repairing = false; cx.notify(); }
-      });
-      return;
-    }
-    if (status.kind === "exited") cx.spawn(async () => { try { await writeProfile(savedRules().profile); await hc(["keys", status.term.address, "enter"]); } catch {} });
-    else { this.phase = null; this.error = ""; }
-  }
-
-  render(cx) {
-    this.ensure(cx);
-    const t = theme();
-    const status = this.status();
-    const why = this.why?.line ? `: ${this.why.line}` : "";
-    const profile = savedRules().profile;
-    const using = status.term?.labels?.[RUNNING_PROFILE];
-    const later = using && using !== profile ? ` Settings say \`${profile}\`; it applies at the next start or Restart.` : "";
-    const missing = !findNode(layout(), PANEL_BLOCK);
-    let [text, action] = {
-      checking: [`Starting Hermes (\`${profile}\`)…`], launching: [`Starting Hermes (\`${profile}\`)…`],
-      running: [`Running.${later}${this.profileError ? ` Cannot write the profile file: ${this.profileError}` : ""}`],
-      exited: [`Hermes (\`${using ?? profile}\`) exited with code ${status.code}${why}.${later}`, "Restart"],
-      gone: ["The Shepherd terminal is gone.", "Start again"],
-      failed: [`Cannot start Hermes: ${this.error}`, "Start again"],
-    }[status.kind];
-    if (missing) { text = this.repairError || "The chat block is missing. Restore it in this personal layout."; action = this.repairing ? null : "Restore panel"; }
-    const small = (id, label, onClick, primary) => h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).text_size(12)
-      .border_1().border_color(primary ? t.accent : t.input).when(primary, (el) => el.bg(t.accent).font_semibold())
-      .text_color(primary ? t.accent_foreground : t.foreground)
-      .hover((s) => primary ? s.opacity(0.88) : s.bg(t.hover))
-      .on_click((_e, cx) => { onClick(cx); cx.notify(); }).child(label);
-    return h_flex().id("shepherd-panel").size_full().px(10).gap(8).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .child(logo(20))
-      .child(div().flex_none().text_size(13).font_semibold().text_color(t.foreground).child("Shepherd"))
-      .child(div().flex_none().px(6).rounded(4).bg(t.raised).font_family(MONO).text_size(11).text_color(t.muted).child(using ?? profile))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(action ? t.blocked : t.muted)
-        .child(text))
-      .when(Boolean(action), (el) => el.child(small("shepherd-restart", action, (cx) => this.restart(status, cx), true)))
-      .child(small("shepherd-hide", "Hide", () => run("layout.hide", { id: PANEL }), false));
-  }
-}

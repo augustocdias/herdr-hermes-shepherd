@@ -4,21 +4,23 @@ Hermes Shepherd is a Herdr App mod that shows and edits a Hermes kanban board. `
 
 ## Map
 
-- `mods/hermes-shepherd/main.js` is the whole UI. One default-exported `View` routes on its props: none for the board tab, `panel` for the Shepherd panel header, and `menu`, `cron`, `task`, `settings`, `actions`, `confirm` or `archived` for the overlays it opens of itself. The header comment lists the routes.
+- `mods/hermes-shepherd/main.js` contains the board UI and the default-exported `View` router. `panel` delegates to `mods/hermes-shepherd/chat.js`; other props select overlays. The header comment lists the routes.
 - `board/hermes_shepherd_board.py` is the only code that touches a board. It prints JSON, exits 1 with `{"error"}`, and exits 2 when it refuses a write, returning the task's current details. Its module docstring is the CLI contract.
 - `board/hermes_shepherd_cron.py` lists cron jobs of every profile, read-only.
-- `home-manager.nix` installs `main.js` and `mod.json` as store symlinks and wraps both helpers with the configured Hermes Python. A new file the mod needs at runtime must be added there too.
-- `tests/` runs the helpers as subprocesses against real `hermes_cli` in a temporary `HERMES_HOME`. There is no JS test harness.
+- `chat/hermes_shepherd_chat.py` is the profile-bound gateway viewer. It uses canonical Hermes discovery/client APIs and never starts a gateway.
+- `home-manager.nix` bundles the JavaScript and wraps all three helpers with the configured Hermes Python. Relative imports through separate store symlinks fail Herdr's mod-directory check.
+- `tests/` runs helpers as subprocesses against real `hermes_cli` in temporary Hermes homes. `test_chat.py` supplies an independent canonical wire peer; `panel.test.mjs` checks native chat state, not rendering.
 
 ## Commands
 
 ```sh
 "$HERMES_PYTHON" -m unittest discover tests   # about 60 s
+node --test tests/panel.test.mjs
 ```
 
 `$HERMES_PYTHON` is the interpreter that imports `hermes_cli`. It is usually unset in an agent shell. The Hermes Nix package's own `bin/hermes` script sets it in a `HERMES_PYTHON='...'` line; the `hermes` on PATH may be a jail wrapper that `exec`s that script. The `hermes` wrapper refuses to run inside the agent jail; use `"$HERMES_PYTHON" -m hermes_cli.main kanban ...` there instead, always with a temporary `HERMES_HOME`.
 
-UI changes need a private App and Core, as the README's Development section describes. `herdr-app check <mod folder>` needs a Wayland display, so it fails inside the jail. A passing `check` proves only that the mod loads and renders once. Look at a `herdr-app shot` before claiming a visual result.
+UI changes need a private App and Core, as the README's Development section describes. `herdr-app check <mod folder>` needs a display; use an isolated Xvfb and software renderer inside the jail. A passing `check` proves only that the mod loads and renders once. Inspect `herdr-app shot` before claiming a visual result.
 
 ## Hermes kanban
 
@@ -56,7 +58,7 @@ The App writes its own guide on every start: `~/.config/herdr-app/AGENTS.md`, wi
 - Saving a file in the mod folder reloads every copy. A broken save keeps the old build running and reports the error only in `herdr-app status`, so a working screen does not prove an edit loaded.
 - Element colors accept only `#hex`. Take them from `theme()`; layout JSON accepts token names, element styles do not.
 - `svg()` and `image()` draw nothing for a symlinked file, and the App remembers a missing image until it restarts. Home Manager installs symlinks, so `main.js` writes its SVGs as real files at load and draws them only after `ASSETS_READY`. New icons go into `ICONS` and `.gitignore`.
-- Hidden files in the mod folder do not trigger a reload, which is why the panel's profile lives in `.profile`.
+- App 0.1.14 has native `Buffer`, not global `TextDecoder`. Socket EAGAIN can mean an idle read timeout. Composer Enter bindings need a context ending in `> Input`.
 - Mod panes get no pane id. The board claims its tab on the first non-zero size change and follows the tab's name on each render; there is no rename event.
 - `shared()`/`setShared()` state is global and persisted, and a set re-renders every mod. Filters, drafts and rules live there. Top-right buttons are herdr-navigation `tab-controls` set through `shared("tab-controls:hermes-shepherd")`; a click arrives as `hermes-shepherd.<id>` through `nextCommand()`.
 - Find Core terminals by name, never by a stored address, because Core reuses addresses. Launch record commands as `hc run ... -- env -- <argv>` so `hc` never reads them as a shell line or a template. Refuse captures that start with `-`.
@@ -66,4 +68,3 @@ The App writes its own guide on every start: `~/.config/herdr-app/AGENTS.md`, wi
 - A layout is a tree of `row`, `column`, `stack` and `block` nodes with `id`, `size` (`{px}` or `{weight}`), `min`, `max` and `hidden`. Block content is `{mod, props}`, `{terminal}` or a tab or agent reference. The guide has the full schema.
 - Shipped layouts (`main`, `terminals`, `win98`) are replaced on every start; personal changes go in a `layout.clone`. Clicks such as sizes and shown or hidden state live in `layouts/.state/<name>.json`. Shepherd never edits a layout; the panel exists only if the person's layout has the README's block.
 - `keys.json` sections are `global`, `layout:<name>`, `terminal` and `mod:<name>`, and the most specific wins. `<mod>.<command>` reaches the mod's `nextCommand()`.
-- The README says the App deletes a terminal block when its terminal ends and rewrote the Files and Changes column on App 0.1.11. The App 0.1.14 changelog says hand-edited layouts now keep their pieces. Re-test on the installed version before changing that behavior or its README text.

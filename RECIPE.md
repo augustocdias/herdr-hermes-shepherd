@@ -22,7 +22,7 @@ A task opens in a modal dialog, 1200px wide and 85% of the window height. Its si
 
 Other overlays provide filter pickers, New task, Settings, task actions, confirmations, archived tasks and a read-only cron list. The cron list shows every profile's jobs with schedule, state, next run and last result or error.
 
-The optional Shepherd panel has a 36px header over a terminal. Start with a 460px width and limits of 280–1100px. The header shows the coordinator's state, its profile, exit information and the appropriate Start, Restart, Restore panel or Hide controls.
+The optional Shepherd panel is a full-height native conversation view, initially 460px wide with limits of 280–1100px. Show the selected profile, connection and execution state, New, History, Hide, streaming Markdown, tool cards, interactive prompts and a multiline composer with Send and Stop.
 
 ## How it behaves
 
@@ -40,7 +40,7 @@ Refresh on board-folder changes and every 30 seconds. Keep an open task dialog s
 - Filter pickers support arrows and Enter.
 - Left and Right switch task detail tabs. In records, Up and Down select a record and Enter launches it.
 
-These are Hermes task states, not Herdr agent states. Do not map Herdr's working, blocked, done or idle agent signals onto board columns. The coordinator is a real Core terminal, so Herdr handles its terminal and agent presentation.
+These are Hermes task states, not Herdr agent states. Do not map Herdr's working, blocked, done or idle agent signals onto board columns. Chat execution state comes from the selected Hermes gateway conversation, not a Core terminal.
 
 ### Task edits and actions
 
@@ -72,31 +72,33 @@ In Settings, Up and Down select a rule and Enter edits it. Alt+Shift+Up and Alt+
 
 ### Coordinator panel
 
-Keep one Core terminal named `hermes-shepherd` for all tabs and spaces. When the panel becomes visible, attach to that terminal or start it in the person's home folder. Run `hermes -p coordinator` unless Settings saved another valid profile. Never create a profile or change Hermes settings.
+Connect only to the existing gateway serving the selected profile, `coordinator` by default. A default-profile gateway may multiplex that profile. Authenticate its exact profile, instance and authority epoch; never fall back to another profile, create a profile or launch a gateway.
 
-Keep a shell runner alive after Hermes exits. Show its exit code and last line; restart only on Enter or Restart. Hiding the panel, changing tabs and restarting the App must not stop the conversation. A profile change applies at the next start, never by interrupting a live conversation. Show both saved and running profiles when they differ.
+Keep one selected conversation per profile and App state directory. Require New or History on first use; never pick the latest session silently. Restore canonical history and replay on reconnect. Preserve drafts and durable send identities until acknowledgement, and never resend an uncertain request automatically. Profile changes switch viewers without stopping old work.
 
-The Shepherd button and Hide use the layout's panel visibility. A global shortcut may use `layout.toggle:shepherd`. Where the installed App supports it, pass `focus: "shepherd-terminal"` to open and focus the panel, focus a visible panel without hiding it, and hide it when already focused.
+Enter sends and Shift+Enter inserts a newline. Stop and prompt answers carry the selected session and execution generation. Display the gateway's exact approval and clarification choices; refuse unsupported interactive methods explicitly. Show truncation notices for bounded history instead of presenting it as complete.
 
-If the terminal block disappears, Restore panel adds only that block back to the existing personal layout column. Preserve the rest of the layout and reuse a live coordinator. Do not silently replace a layout or edit a shipped layout.
+The Shepherd button and Hide toggle the layout block. Use `focus: "shepherd"` where `layout.toggle` supports it. Hiding or closing the viewer leaves gateway execution running. Do not modify the layout; upgrading the old terminal panel requires the README's explicit subtree replacement.
 
 ## Built from
 
 Use these files as the implementation reference:
 
-- `mods/hermes-shepherd/main.js` contains the UI and embedded icon art.
-- `mods/hermes-shepherd/mod.json` declares `{"place":"none","title":"Hermes Shepherd"}`.
+- `mods/hermes-shepherd/main.js` contains the board UI, routes and embedded icon art.
+- `mods/hermes-shepherd/chat.js` contains the native conversation view and JSONL client.
+- `mods/hermes-shepherd/mod.json` makes the mod focusable.
 - `board/hermes_shepherd_board.py` provides board reads, task details, edits, comments, creation, actions, rule validation and bounded matching as JSON commands.
 - `board/hermes_shepherd_cron.py` reads jobs across profiles as JSON.
-- `home-manager.nix` installs the mod and wraps both helpers with the configured Hermes Python.
+- `chat/hermes_shepherd_chat.py` provides the profile-bound local gateway viewer.
+- `home-manager.nix` bundles the JavaScript and wraps all three helpers with the configured Hermes Python.
 
-Use one default-exported gpui-kit `View`. No props shows the board; `panel` shows the coordinator header. Overlay props route `menu`, `cron`, `task`, `settings`, `actions`, `confirm`, `archived` and `create` to their views. Use gpui-base inputs, text areas, Markdown and scrollbars rather than a web view.
+Use one default-exported gpui-kit `View`. No props shows the board; `panel` delegates to the native conversation view. Overlay props route `menu`, `cron`, `task`, `settings`, `actions`, `confirm`, `archived` and `create` to their views. Use gpui-base inputs, text areas, Markdown and scrollbars rather than a web view.
 
 Use Herdr's `spaces`, `panes`, `terminals`, `focused` and `layout` for context; `theme` and `settings` for appearance; `shared` and `setShared` for persisted filters, settings and drafts; `openOverlay` and `closeOverlay` for dialogs; `nextCommand` for tab-control commands; `watchFolder` and view timers for refresh; `exec` for helper processes; and `hc` and `run` for Core and App operations. Do not retain a callback's `cx`.
 
 Publish top-right controls through `shared("tab-controls:hermes-shepherd")` for herdr-navigation. Use the `hermes-shepherd.filters`, `hermes-shepherd.sessions` and `hermes-shepherd.drafts` shared keys for the mod's state.
 
-Install `hermes-shepherd-board` and `hermes-shepherd-cron` on the App's PATH. Both must use the interpreter that imports the installed `hermes_cli`. The board helper's module docstring defines its flags and JSON error contract. Exit 1 reports errors; refused description edits and status actions exit 2 with current task details.
+Install `hermes-shepherd-board`, `hermes-shepherd-cron` and `hermes-shepherd-chat` on the App's PATH, using the installed Hermes interpreter. The board helper's module docstring defines its flags and JSON error contract. Exit 1 reports errors; refused description edits and status actions exit 2 with current task details. The chat helper uses canonical Hermes discovery and client APIs through an authenticated loopback JSONL connection.
 
 Read the installed Hermes source before rebuilding the helper. Use Hermes's own create, edit, comment, archive, unblock and archived-delete functions. For moves and restores, use the dashboard's `plugin_api.update_task` so dependency gates, descendant resets and worker termination remain intact. Never write board SQL or set statuses directly. Re-read after every write.
 
@@ -105,38 +107,26 @@ The optional panel is this subtree in a personal layout, usually beside Files an
 ```json
 {
   "id": "shepherd",
-  "type": "column",
+  "type": "block",
   "hidden": true,
   "size": { "px": 460 },
   "min": 280,
   "max": 1100,
-  "children": [
-    {
-      "id": "shepherd-bar",
-      "type": "block",
-      "size": { "px": 36 },
-      "content": { "mod": "hermes-shepherd", "props": { "panel": true } }
-    },
-    {
-      "id": "shepherd-terminal",
-      "type": "block",
-      "content": { "terminal": "hermes-shepherd" }
-    }
-  ]
+  "content": { "mod": "hermes-shepherd", "props": { "panel": true } }
 }
 ```
 
-Keep the `shepherd` and `shepherd-terminal` IDs and terminal name. Other sizes and placement are personal choices. No shipped layout or shipped mod clone is bundled with this mod.
+Keep the `shepherd` ID. Other sizes and placement are personal choices. No shipped layout or shipped mod clone is bundled with this mod.
 
-Write embedded SVG icons and the full-color logo to real files in the writable mod folder before drawing them. Keep the icon generation exception at module scope; keep instance state and other host calls in view initialization. Store the saved coordinator profile in the hidden `.profile` file so updating it does not trigger a reload.
+Write embedded SVG icons and the full-color logo to real files in the writable mod folder before drawing them. Keep the icon generation exception at module scope; keep instance state and other host calls in view initialization. Persist profile settings and profile-scoped chat drafts through App shared state.
 
-Launch record commands through Core as `hc run ... -- env -- <argv>`, without a shell. The coordinator deliberately uses `sh` to keep its terminal alive and passes the profile as one argument after `-p`.
+Launch record commands through Core as `hc run ... -- env -- <argv>`, without a shell. The chat bridge starts only a viewer process, never a terminal or gateway.
 
 ## Watch out
 
-This mod runs programs and reads files outside its own folder. Disclose that before installation. It reads Hermes boards and profile cron data, writes task changes through Hermes, writes icon and profile files, and launches user-defined record commands and the coordinator through Core. The mod adds no sandbox. Programs and their wrappers determine network access, jail boundaries and approvals. In an agent jail, verification commands must follow the jail's process rules too.
+This mod runs programs and reads files outside its own folder. Disclose that before installation. It reads Hermes boards and profile cron data, writes task changes through Hermes, writes icons and private viewer state, and launches user-defined record commands through Core. Chat execution uses the existing gateway's credentials, sandbox and approvals; a jailed viewer does not jail the gateway. In an agent jail, verification processes must follow the jail's process rules too.
 
-The board and cron views need an existing Hermes installation and board, not a gateway or coordinator profile. The panel additionally needs `hermes`, `hc` and `sh` on Core's PATH and an existing configured profile. Herdr-navigation is needed for the top-right controls. Without it, Settings remains reachable from Edit rules, but cron and archive lists have no entry point.
+The board and cron views need an existing Hermes installation and board, not a gateway or coordinator profile. The panel additionally needs the chat helper, an existing selected profile and a canonical gateway serving it. Herdr-navigation is needed for the top-right controls. Without it, Settings remains reachable from Edit rules, but cron and archive lists have no entry point.
 
 Opening a board may run Hermes schema migrations. The cron helper skips profiles without a jobs file, but Hermes's own job reader can rewrite an existing file. Do not promise read-only filesystem access.
 
@@ -146,23 +136,23 @@ Archiving may release child tasks and start work. Restoring may reset descendant
 
 Hermes has no complete change feed. Database writes can stay in a WAL, so folder watching alone is insufficient; keep the 30-second poll. Do not infer repository or spec metadata from text or unrelated workspace types.
 
-Only Markdown tables with rows beginning with `|` receive the separate horizontal scroll treatment. There is no drag-and-drop status move, cron editing or automatic coordinator restart.
+Only Markdown tables with rows beginning with `|` receive the board's separate horizontal scroll treatment. There is no drag-and-drop status move or cron editing. The panel does not provide terminal slash commands, model controls, file uploads or secret/sudo/vault prompt UI.
 
-Home Manager installs source symlinks, but Herdr image rendering needs real asset files. Wait for icon writes before rendering them; a cached missing image can require an App restart. Hidden profile files avoid hot reload. A broken source reload can leave the last good build visible, so inspect App status rather than trusting the screen alone.
+Home Manager bundles `main.js` and `chat.js` because separate store symlinks make relative imports resolve outside the mod folder. Image assets still need real files. Wait for icon writes before rendering them; a cached missing image can require an App restart. A broken source reload can leave the last good build visible, so inspect App status rather than trusting the screen alone.
 
-Find the coordinator by name, never a cached terminal address. Core reuses addresses. Panel repair requires a personal layout and must preserve unrelated nodes. Terminal-block removal varies by App version; exercise recovery on the installed version.
+Use native `Buffer` for JSONL decoding; App 0.1.14 has no global `TextDecoder`. Preserve incomplete UTF-8 bytes until a whole line arrives. Idle socket reads can return EAGAIN without disconnecting. Composer bindings need the `ShepherdChatComposer > Input` context to override the native textarea's Enter action.
 
 For Nix-managed setups, declare persistent installation, layout and key changes in Nix. Preserve managed symlinks. Treat activation as a separate approved step, not something the recipe has already performed.
 
 ## Done when
 
 - Run `"$HERMES_PYTHON" -m unittest discover tests` against the installed Hermes package. Use temporary Hermes homes and strip inherited board-resolution overrides.
-- Run `node --test tests/panel.test.mjs` to verify panel recovery preserves other layout nodes and live conversations and reports refused layout edits.
+- Run `node --test tests/panel.test.mjs` to verify draft acknowledgements, uncertain-send identity, profile isolation, prompt lifetimes and native transport framing.
 - Run `herdr-app check` on the installed mod, then exercise it in a private App and Core with an isolated Hermes home. A passing load check alone does not prove layout or later async states.
 - Seed the private board with `tests/seed_board.py`. Verify columns, empty states, narrow-window scrolling, running animation, filters, keyboard navigation and the read-error banner.
 - Rename the board tab and verify board matching and default fallback. Change the board externally and observe both the board and an open task refresh.
 - Create a task, edit its Triage description, exercise a stale-save refusal, add a comment and verify Done and archived tasks reject comments. Confirm drafts survive dialog closes.
 - Exercise dependency refusal, Unblock, Archive, Restore and permanent deletion against disposable tasks. Verify the actual resulting states and confirmation behavior.
 - Verify Markdown table scrolling, combined history, rule ordering, literal capture insertion, leading-dash refusal, bounded regex matching and record launch failures. Verify new-tab and background launches in the selected space.
-- Show the panel, hide it, switch spaces and reopen it without starting another coordinator. Exit Hermes, confirm no automatic restart, then restart deliberately. Save another profile and confirm it applies only at the next start. Remove the disposable panel terminal block and restore it without disturbing the layout.
+- Exercise native New, History, multiline send, streaming, tools, clarification and Stop against a private real gateway and local synthetic model. Verify hide/reopen, profile changes and viewer reconnect do not stop or duplicate gateway work. Check the bundled Home Manager installation at panel width.
 - Inspect `herdr-app status` for load errors and inspect a `herdr-app shot` of the running mod. Save a representative board screenshot as `preview.png` before publishing.
