@@ -1,5 +1,5 @@
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Button, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, Button, TextView, TextareaState, Textarea, InputState, Input, SliderState, Slider, SliderTrack, SliderIndicator, SliderThumb } from "gpui-base";
 import { exec, appHome, shared, setShared, theme, run, nextCommand, openOverlay } from "herdr";
 import { connect } from "net";
 import { Buffer } from "buffer";
@@ -24,6 +24,10 @@ export class ShepherdChat {
     this.open = true; this.epoch = 0; this.pending = new Map(); this.answers = new Map();
     this.profile = this.getProfile(); this.state = null; this.socket = null; this.error = "";
     this.connecting = false; this.history = false; this.sessions = []; this.at = 0; this.mutation = false;
+    this.expandedTools = new Set();
+    this.scrollTop = 0; this.contentHeight = 0; this.viewportHeight = 0; this.followLatest = true;
+    this.scrollPosition = SliderState.new({ min: 0, max: 1, step: 0.0001, value: 0 });
+    this.scrollPosition.on("change", (value, cx) => this.scrollTimeline((1 - value) * this.scrollLimit(), cx));
     this.handle = cx.focus_handle();
     this.composer = TextareaState.new({ value: this.draft().text, placeholder: "Message Shepherd…", rows: 3 });
     this.composer.set_auto_grow(3, 7);
@@ -63,8 +67,25 @@ export class ShepherdChat {
 
   draft() { return shared(DRAFT + this.profile) ?? { text: "", pending: null }; }
   saveDraft(draft) { setShared(DRAFT + this.profile, draft); }
+  toggleTool(id) {
+    this.followLatest = false;
+    if (!this.expandedTools.delete(id)) this.expandedTools.add(id);
+  }
+  scrollLimit() { return Math.max(0, this.contentHeight - this.viewportHeight); }
+  scrollTimeline(top, cx) {
+    this.scrollTop = Math.max(0, Math.min(this.scrollLimit(), top));
+    this.followLatest = this.scrollTop >= this.scrollLimit() - 1;
+    const position = this.scrollLimit() ? 1 - this.scrollTop / this.scrollLimit() : 0;
+    if (Math.abs(this.scrollPosition.value() - position) > 0.00001) this.scrollPosition.set_value(position);
+    cx.notify();
+  }
+  measureTimeline(field, height, cx) {
+    if (this[field] === height) return;
+    this[field] = height;
+    this.scrollTimeline(this.followLatest && !this.history ? this.scrollLimit() : this.scrollTop, cx);
+  }
   releaseAnswers() { for (const value of this.answers.values()) value.input.release(); this.answers.clear(); }
-  close() { this.open = false; this.detach(); this.composer.release(); this.releaseAnswers(); }
+  close() { this.open = false; this.detach(); this.composer.release(); this.scrollPosition.release(); this.releaseAnswers(); }
 
   detach() {
     ++this.epoch;
@@ -129,6 +150,9 @@ export class ShepherdChat {
   receive(event) {
     if (event.type === "state") {
       if (event.profile !== this.profile) throw new Error("Refused state from a different Hermes profile.");
+      if (event.session_id !== this.state?.session_id) { this.expandedTools.clear(); this.followLatest = true; }
+      const tools = new Set((event.items ?? []).filter((item) => item.kind === "tool").map((item) => item.id));
+      for (const id of this.expandedTools) if (!tools.has(id)) this.expandedTools.delete(id);
       this.state = event; this.connecting = false;
       const prompts = new Set((event.prompts ?? []).map((p) => p.id));
       for (const [id, value] of this.answers) if (!prompts.has(id)) { value.input.release(); this.answers.delete(id); }
@@ -171,8 +195,8 @@ export class ShepherdChat {
       try {
         const reply = await this.request(op, fields, cx);
         if (epoch !== this.epoch) return;
-        if (op === "sessions") { this.sessions = reply.sessions ?? []; this.at = 0; this.history = true; this.handle.focus(); }
-        if (op === "new" || op === "resume") { this.history = false; this.composer.focus(); }
+        if (op === "sessions") { this.sessions = reply.sessions ?? []; this.at = 0; this.history = true; this.scrollTimeline(0, cx); this.handle.focus(); }
+        if (op === "new" || op === "resume") { this.history = false; this.scrollTimeline(this.scrollLimit(), cx); this.composer.focus(); }
       } catch (e) { if (epoch === this.epoch) this.error = message(e); }
       finally { this.mutation = false; if (this.open) cx.notify(); }
     });
@@ -218,14 +242,26 @@ export class ShepherdChat {
     const t = theme(), state = this.state, ready = this.ready(), draft = this.draft();
     const pending = draft.pending;
     const note = (text, error = false) => div().text_size(12).text_color(error ? t.blocked : t.muted).child(text);
-    const item = (entry) => v_flex().id(`chat-item-${entry.id}`).flex_none().min_w(0).p(10).gap(5).rounded(7)
-      .bg(entry.kind === "user" ? t.raised : t.background).border_1().border_color(t.border)
-      .child(div().text_size(11).font_semibold().text_color(entry.status === "error" ? t.blocked : t.muted)
-        .child(`${entry.name || ({ user: "You", assistant: "Shepherd", thinking: "Thinking", tool: "Tool", notice: "Notice" }[entry.kind] ?? entry.kind)}${entry.status ? ` · ${entry.status}` : ""}`))
-      .when(Boolean(entry.input), (el) => el.child(plain(`chat-input-${entry.id}`, entry.input)))
-      .child(entry.kind === "assistant" || entry.kind === "user"
-        ? TextView.markdown(`chat-text-${entry.id}`, entry.text || "…").selectable(true).text_size(13)
-        : plain(`chat-text-${entry.id}`, entry.text || (entry.status === "running" ? "Working…" : "")));
+    const item = (entry) => {
+      const tool = entry.kind === "tool", expanded = !tool || this.expandedTools.has(entry.id);
+      const label = `${entry.name || ({ user: "You", assistant: "Shepherd", thinking: "Thinking", tool: "Tool", notice: "Notice" }[entry.kind] ?? entry.kind)}${entry.status ? ` · ${entry.status}` : ""}`;
+      return v_flex().id(`chat-item-${entry.id}`).flex_none().min_w(0).p(tool ? 6 : 10).gap(5).rounded(7)
+        .bg(entry.kind === "user" ? t.raised : t.background).border_1().border_color(t.border)
+        .child(tool
+          ? Button.new(`chat-tool-${entry.id}`).tab_index(0).flex().w_full().min_w(0).items_center().gap(6).h(24).px(4)
+            .text_size(11).text_color(entry.status === "error" ? t.blocked : t.muted)
+            .tooltip(`${expanded ? "Collapse" : "Expand"} tool details: ${entry.name || "Tool"}`)
+            .on_click((_e, cx) => { this.toggleTool(entry.id); cx.notify(); })
+            .child(div().flex_none().child(expanded ? "▾" : "▸"))
+            .child(div().flex_1().min_w(0).truncate().child(entry.name || "Tool"))
+            .when(Boolean(entry.status), (el) => el.child(div().flex_none().child(entry.status)))
+          : div().text_size(11).font_semibold().text_color(entry.status === "error" ? t.blocked : t.muted).child(label))
+        .when(expanded, (el) => el
+          .when(Boolean(entry.input), (el) => el.child(plain(`chat-input-${entry.id}`, entry.input)))
+          .child(entry.kind === "assistant" || entry.kind === "user"
+            ? TextView.markdown(`chat-text-${entry.id}`, entry.text || "…").selectable(true).text_size(13)
+            : plain(`chat-text-${entry.id}`, entry.text || (entry.status === "running" ? "Working…" : ""))));
+    };
     const promptCard = (prompt) => {
       const answer = this.answers.get(prompt.id);
       return v_flex().id(`chat-prompt-${prompt.id}`).flex_none().p(10).gap(8).rounded(7).border_1().border_color(t.accent)
@@ -249,7 +285,7 @@ export class ShepherdChat {
         if (!this.history || !this.handle.is_focused()) return;
         if (e.key === "down" || e.key === "up") this.at = Math.max(0, Math.min(this.sessions.length - 1, this.at + (e.key === "down" ? 1 : -1)));
         else if (e.key === "enter" && this.sessions[this.at]) this.action("resume", { session_id: this.sessions[this.at].id }, cx);
-        else if (e.key === "escape") { this.history = false; this.composer.focus(); }
+        else if (e.key === "escape") { this.history = false; this.scrollTimeline(this.scrollLimit(), cx); this.composer.focus(); }
         else return;
         cx.stop_propagation(); cx.notify();
       })
@@ -265,12 +301,18 @@ export class ShepherdChat {
         .child(h_flex().gap(6).items_center()
           .child(control(t, "chat-new", "New", (_e, cx) => this.action("new", {}, cx), ready && !this.mutation))
           .child(control(t, "chat-history", this.history ? "Back" : "History", (_e, cx) => {
-            if (this.history) { this.history = false; this.composer.focus(); cx.notify(); }
+            if (this.history) { this.history = false; this.scrollTimeline(this.scrollLimit(), cx); this.composer.focus(); }
             else this.action("sessions", {}, cx);
           }, ready && !this.mutation))
           .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.connecting ? "Connecting…" : !state?.connected ? "Disconnected" : state.running ? "Running" : "Connected")))
         .when(Boolean(state?.session_id), (el) => el.child(div().truncate().text_size(11).text_color(t.muted).child(`${state.title || state.session_id}${state.model ? ` · ${state.model}` : ""}`))))
-      .child(v_flex().id("chat-timeline").flex_1().min_h(0).min_w(0).p(10).gap(10).overflow_y_scrollbar()
+      // Own the offset because native overflow containers expose no scroll-to-bottom control.
+      .child(div().id("chat-timeline").relative().flex_1().min_h(0).min_w(0).overflow_hidden()
+        .on_size_change((size, cx) => this.measureTimeline("viewportHeight", size.height, cx))
+        .on_scroll_wheel((event, cx) => { this.scrollTimeline(this.scrollTop - event.delta.y, cx); cx.stop_propagation(); })
+        .child(v_flex().id("chat-content").absolute().top(-(this.followLatest && !this.history ? this.scrollLimit() : this.scrollTop))
+          .left(0).right(14).p(10).gap(10)
+          .on_size_change((size, cx) => this.measureTimeline("contentHeight", size.height, cx))
         .when(Boolean(this.error || state?.error || (state && !state.connected)), (el) => el.child(v_flex().gap(8).child(note(this.error || state?.error || "The profile's gateway is disconnected. Retry reconnects without starting it.", true))
           .child(control(t, "chat-retry", "Retry connection", (_e, cx) => this.start(cx), !this.connecting))))
         .when(this.history, (el) => el.child(v_flex().gap(6).child(note("Choose a conversation. ↑ ↓ and Enter resume; Esc returns."))
@@ -283,7 +325,12 @@ export class ShepherdChat {
           .when(Boolean(state?.connected && !state.session_id), (el) => el.child(note("Choose History or New to start a conversation. No recent session is selected automatically.")))
           .when(items.length > 250, (el) => el.child(note(`${items.length - 250} older entries omitted from this view.`)))
           .children(items.slice(-250).map(item)).children((state?.prompts ?? []).map(promptCard))))
+        .when(this.scrollLimit() > 0, (el) => el.child(Slider.new(this.scrollPosition).axis("vertical").absolute().top(16).bottom(16).right(2).w(10)
+          .child(SliderTrack.new(this.scrollPosition).axis("vertical").size_full()
+            .child(SliderIndicator.new(this.scrollPosition).axis("vertical").relative().size_full().rounded(5).bg(t.chrome)
+              .child(SliderThumb.new(this.scrollPosition).axis("vertical").tab_index(0).w(8).h(24).mb(-12).rounded(4).bg(t.muted).tooltip("Scroll conversation")))))))
       .child(v_flex().flex_none().p(10).gap(7).border_t(1).border_color(t.border)
+        .when(!this.history && !this.followLatest, (el) => el.child(control(t, "chat-latest", "↓ Latest", (_e, cx) => this.scrollTimeline(this.scrollLimit(), cx))))
         .when(Boolean(pending), (el) => el.child(note(`A send to ${pending.session_id} is awaiting acknowledgement or its outcome is uncertain. Reconnect and inspect that conversation before explicitly retrying the same request.`, true))
           .child(control(t, "chat-retry-send", "Retry same send", (_e, cx) => this.send(cx, true), ready && !this.mutation && pending.session_id === state?.session_id)))
         .child(v_flex().key_context("ShepherdChatComposer")

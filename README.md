@@ -65,6 +65,8 @@ Filters are global: every Shepherd tab in every space uses the same Repository a
 
 The Shepherd panel is a native chat with your existing Hermes `coordinator` profile, not a terminal. It shows streaming Markdown, tool calls and results, approval and clarification cards, and a multiline composer. Enter sends; Shift+Enter inserts a newline. Stop interrupts only the selected conversation's current execution.
 
+Tool calls, including skill reads, start as compact rows with their status visible. Click the arrow to expand or collapse their inputs and results. The chat follows new output while you are at the bottom. Scrolling up or expanding a tool pauses following so you can read. Scroll back to the bottom or click Latest to resume.
+
 The panel connects to an already-running Hermes gateway. A gateway running under the default profile can serve `coordinator` when profile multiplexing is enabled (`gateway.multiplex_profiles: true`). Shepherd discovers and authenticates the exact selected profile; it never falls back to the default profile, creates a profile, starts a gateway or changes Hermes configuration.
 
 Choose New or a conversation from History on first use. New creates a conversation in your home directory. History combines active and stored conversations from that profile, showing up to 200 recent choices. Shepherd remembers your selection; it never silently chooses the most recent conversation. If that selection is no longer available, a notice asks you to choose New or History. Each profile has its own selection and draft. Copies of the panel in the same App share them.

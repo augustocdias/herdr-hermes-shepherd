@@ -12,8 +12,8 @@ const stubs = {
       value(){return this.text;} set_value(text){this.text=text;} replace(text){this.text+=text;}
       on(name,fn){this.events[name]=fn;} set_auto_grow(){} focus(){} release(){this.released=true;}
     }
-    export const TextareaState={new:options=>new State(options)}, InputState={new:options=>new State(options)};
-    export const v_flex=()=>{},h_flex=()=>{},Button={},TextView={},Textarea={},Input={};`,
+    export const TextareaState={new:options=>new State(options)}, InputState={new:options=>new State(options)}, SliderState={new:options=>new State(options)};
+    export const v_flex=()=>{},h_flex=()=>{},Button={},TextView={},Textarea={},Input={},Slider={},SliderTrack={},SliderIndicator={},SliderThumb={};`,
   herdr: `
     export const appHome=()=>'/private/app', shared=key=>globalThis.shepherdChatTestStore.get(key),
       setShared=(key,value)=>globalThis.shepherdChatTestStore.set(key,value), theme=()=>({}), run=()=>{}, openOverlay=()=>{};
@@ -40,6 +40,58 @@ function setup() {
   const settle=async()=>{await Promise.resolve();await Promise.resolve();await Promise.resolve();};
   return {panel,cx,frames,tasks,launch,settle};
 }
+
+test("tool expansion survives streaming updates but not conversation changes or removed calls",()=>{
+  const {panel}=setup();
+  const tool={id:"tool-1",kind:"tool",name:"read_skill",status:"running",input:"guide",text:""};
+  panel.receive(snapshot({items:[tool]}));
+  assert.equal(panel.expandedTools.size,0);
+  panel.toggleTool(tool.id);
+  panel.receive(snapshot({items:[{...tool,status:"done",text:"Skill contents"}]}));
+  assert.equal(panel.expandedTools.has(tool.id),true);
+  panel.toggleTool(tool.id);
+  assert.equal(panel.expandedTools.has(tool.id),false);
+  panel.toggleTool(tool.id);
+  panel.receive(snapshot({session_id:"session-b",items:[tool]}));
+  assert.equal(panel.expandedTools.size,0);
+  panel.toggleTool(tool.id);
+  panel.receive(snapshot());
+  assert.equal(panel.expandedTools.size,0);
+});
+
+test("streaming follows the bottom until scrolling up, then preserves the reading position",()=>{
+  const {panel,cx}=setup();
+  panel.measureTimeline("viewportHeight",300,cx);
+  panel.measureTimeline("contentHeight",900,cx);
+  assert.equal(panel.scrollTop,600);
+  panel.measureTimeline("contentHeight",1100,cx);
+  assert.equal(panel.scrollTop,800);
+  panel.scrollTimeline(350,cx);
+  panel.measureTimeline("contentHeight",1400,cx);
+  assert.equal(panel.scrollTop,350);
+  assert.equal(panel.followLatest,false);
+  panel.scrollTimeline(panel.scrollLimit(),cx);
+  panel.measureTimeline("contentHeight",1600,cx);
+  assert.equal(panel.scrollTop,1300);
+  assert.equal(panel.followLatest,true);
+  panel.measureTimeline("contentHeight",100,cx);
+  assert.equal(panel.scrollTop,0);
+  assert.equal(panel.followLatest,true);
+});
+
+test("expanding a tool preserves its position and a different conversation resumes following",()=>{
+  const {panel,cx}=setup();
+  panel.measureTimeline("viewportHeight",300,cx);
+  panel.measureTimeline("contentHeight",900,cx);
+  panel.toggleTool("tool-1");
+  panel.measureTimeline("contentHeight",1800,cx);
+  assert.equal(panel.scrollTop,600);
+  assert.equal(panel.followLatest,false);
+  panel.receive(snapshot({session_id:"session-b"}));
+  assert.equal(panel.followLatest,true);
+  panel.measureTimeline("contentHeight",1000,cx);
+  assert.equal(panel.scrollTop,700);
+});
 
 test("a draft clears only after a successful send acknowledgement",async()=>{
   const {panel,cx,frames,launch,settle}=setup();
