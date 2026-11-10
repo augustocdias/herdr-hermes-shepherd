@@ -176,6 +176,36 @@ test("profile drafts are isolated and closing a viewer sends no stop request",()
   panel.close();assert.deepEqual(frames,[]);
 });
 
+test("a failed reconnect preserves the transcript and an uncertain draft without resending",async()=>{
+  const {panel,cx,frames,launch}=setup();
+  const items=[{id:"last",kind:"assistant",text:"Previous conversation"}];
+  const draft={text:"Keep this",pending:{request_id:"uncertain",session_id:"session-a",text:"Keep this"}};
+  panel.receive(snapshot({items}));panel.saveDraft(draft);
+  transport.exec=async()=>({code:1,stdout:"",stderr:"Gateway unavailable"});
+  panel.start(cx);await launch();
+  assert.deepEqual(panel.state.items,items);
+  assert.equal(panel.state.connected,false);
+  assert.deepEqual(panel.draft(),draft);
+  assert.equal(panel.connecting,false);
+  assert.deepEqual(frames,[]);
+});
+
+test("a stalled connection times out and a forced reconnect ignores its late completion",async()=>{
+  const {panel,cx,launch,settle}=setup();
+  let finishOld;
+  transport.exec=()=>new Promise(resolve=>{finishOld=resolve;});
+  cx.sleep=async()=>{};
+  panel.start(cx);const old=launch();
+  await launch();
+  assert.equal(panel.connecting,false);
+  assert.match(panel.error,/timed out/i);
+  transport.exec=async()=>({code:1,stdout:"",stderr:"New connection failure"});
+  panel.start(cx);await launch();
+  finishOld({code:1,stdout:"",stderr:"Stale error"});await old;await settle();
+  assert.equal(panel.error,"New connection failure");
+  assert.equal(panel.connecting,false);
+});
+
 test("bridge transport uses only the selected profile and decodes split UTF-8 frames without choosing a session",async()=>{
   const {panel,cx,frames,launch}=setup();
   const calls=[];

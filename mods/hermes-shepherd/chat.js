@@ -96,10 +96,17 @@ export class ShepherdChat {
   }
 
   start(cx) {
-    this.detach(); this.error = ""; this.connecting = true; this.state = null;
+    this.detach(); this.error = ""; this.connecting = true;
     const epoch = this.epoch, profile = this.profile;
     cx.spawn(async (cx) => {
       let socket;
+      cx.spawn(async (cx) => {
+        await cx.sleep(15000);
+        if (this.open && epoch === this.epoch && this.connecting) {
+          this.error = "Connection timed out. Reconnect to try again.";
+          this.detach(); cx.notify();
+        }
+      });
       try {
         const result = await exec("hermes-shepherd-chat", ["--connect", "--profile", profile, "--state-dir", `${appHome()}/data/hermes-shepherd-chat`]);
         if (!this.open || epoch !== this.epoch) return;
@@ -111,10 +118,6 @@ export class ShepherdChat {
         if (!this.open || epoch !== this.epoch) { socket.close(); return; }
         this.socket = socket;
         await socket.write(JSON.stringify({ op: "hello", token: endpoint.token }) + "\n");
-        cx.spawn(async (cx) => {
-          await cx.sleep(15000);
-          if (this.open && epoch === this.epoch && this.connecting) { this.error = "The chat bridge did not provide a session state. Retry to reconnect."; socket.close(); cx.notify(); }
-        });
         let buffer = new Uint8Array(0);
         while (this.open && epoch === this.epoch) {
           let chunk;
@@ -125,7 +128,7 @@ export class ShepherdChat {
             throw e;
           }
           if (epoch !== this.epoch || !this.open) return;
-          if (chunk === null) throw new Error("Disconnected. Gateway work continues; Retry reconnects without resending messages.");
+          if (chunk === null) throw new Error("Disconnected. Gateway work continues; Reconnect restores the viewer without resending messages.");
           const merged = new Uint8Array(buffer.length + chunk.length);
           merged.set(buffer); merged.set(chunk, buffer.length); buffer = merged;
           let start = 0;
@@ -172,7 +175,7 @@ export class ShepherdChat {
   }
 
   request(op, fields, cx) {
-    if (!this.socket || this.connecting) return Promise.reject(new Error("Not connected. Retry before acting."));
+    if (!this.socket || this.connecting) return Promise.reject(new Error("Not connected. Reconnect before acting."));
     const id = uid(), socket = this.socket;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -304,8 +307,12 @@ export class ShepherdChat {
             if (this.history) { this.history = false; this.scrollTimeline(this.scrollLimit(), cx); this.composer.focus(); }
             else this.action("sessions", {}, cx);
           }, ready && !this.mutation))
-          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.connecting ? "Connecting…" : !state?.connected ? "Disconnected" : state.running ? "Running" : "Connected")))
+          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.connecting ? "Connecting…" : !state?.connected ? "Disconnected" : state.running ? "Running" : "Connected"))
+          .child(control(t, "chat-reconnect", "Reconnect", (_e, cx) => this.start(cx))))
         .when(Boolean(state?.session_id), (el) => el.child(div().truncate().text_size(11).text_color(t.muted).child(`${state.title || state.session_id}${state.model ? ` · ${state.model}` : ""}`))))
+      .when(Boolean(this.error || state?.error || (state && !state.connected && !this.connecting)),
+        (el) => el.child(div().flex_none().px(10).py(8).border_b(1).border_color(t.border)
+          .child(note(this.error || state?.error || "Disconnected. Reconnect restores the viewer without resending messages.", true))))
       // Own the offset because native overflow containers expose no scroll-to-bottom control.
       .child(div().id("chat-timeline").relative().flex_1().min_h(0).min_w(0).overflow_hidden()
         .on_size_change((size, cx) => this.measureTimeline("viewportHeight", size.height, cx))
@@ -313,8 +320,6 @@ export class ShepherdChat {
         .child(v_flex().id("chat-content").absolute().top(-(this.followLatest && !this.history ? this.scrollLimit() : this.scrollTop))
           .left(0).right(14).p(10).gap(10)
           .on_size_change((size, cx) => this.measureTimeline("contentHeight", size.height, cx))
-        .when(Boolean(this.error || state?.error || (state && !state.connected)), (el) => el.child(v_flex().gap(8).child(note(this.error || state?.error || "The profile's gateway is disconnected. Retry reconnects without starting it.", true))
-          .child(control(t, "chat-retry", "Retry connection", (_e, cx) => this.start(cx), !this.connecting))))
         .when(this.history, (el) => el.child(v_flex().gap(6).child(note("Choose a conversation. ↑ ↓ and Enter resume; Esc returns."))
           .when(!this.sessions.length, (el) => el.child(note("No stored conversations in this profile.")))
           .children(this.sessions.map((session, i) => Button.new(`chat-session-${session.id}`).tab_index(0).w_full().min_w(0).px(9).py(7)
