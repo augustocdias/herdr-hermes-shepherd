@@ -18,7 +18,7 @@ const control = (t, id, label, click, enabled = true, primary = false) => Button
 // All live state belongs to this viewer. The bridge owns conversation selection and work;
 // shared storage holds drafts and durable send identities across copies and App restarts.
 export class ShepherdChat {
-  constructor(profile) { this.getProfile = profile; }
+  constructor(profile, logo) { this.getProfile = profile; this.logo = logo; }
 
   init(cx) {
     this.open = true; this.epoch = 0; this.pending = new Map(); this.answers = new Map();
@@ -255,8 +255,9 @@ export class ShepherdChat {
       })
       .child(v_flex().flex_none().p(10).gap(6).border_b(1).border_color(t.border)
         .child(h_flex().gap(6).items_center()
+          .when(Boolean(this.logo), (el) => el.child(this.logo(24)))
           .child(div().font_semibold().text_size(13).child("Shepherd"))
-          .child(Button.new("chat-profile").tab_index(0).flex().items_center().flex_1().min_w(0).h(28).px(6).rounded(6).bg(t.raised).text_size(12)
+          .child(Button.new("chat-profile").tab_index(0).flex().items_center().flex_1().min_w(0).h(28).px(6).rounded(6).text_color(t.muted).text_size(12)
             .tooltip("Change Hermes profile in Settings")
             .on_click(() => openOverlay({ mod: "hermes-shepherd", kind: "dialog", modal: true, width: 860, height: 0.85, props: { settings: true } }))
             .child(div().min_w(0).truncate().child(this.profile)))

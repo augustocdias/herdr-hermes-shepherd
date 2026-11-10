@@ -144,7 +144,7 @@ export default class Shepherd extends View {
   init(_props, cx) {
     if (props()?.task) { this.details = new TaskDetails(); this.details.init(cx); return; }
     if (props()?.settings) { this.details = new SessionSettings(); this.details.init(cx); return; }
-    if (props()?.panel) { this.details = new ShepherdChat(() => savedRules().profile); this.details.init(cx); return; }
+    if (props()?.panel) { this.details = new ShepherdChat(() => savedRules().profile, logo); this.details.init(cx); awaitAssets(this, cx); return; }
     const Overlay = props()?.actions ? ActionMenu : props()?.confirm ? Confirm : props()?.archived ? Archived
       : props()?.create ? CreateTask : null;
     if (Overlay) { this.details = new Overlay(); this.details.init(cx); return; }
